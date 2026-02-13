@@ -1,0 +1,218 @@
+import chalk from "chalk";
+import type { Command } from "commander";
+import { loadConfig } from "@agent-orchestrator/core";
+import type { OrchestratorConfig } from "@agent-orchestrator/core";
+import { exec, tmux, git, gh } from "../lib/shell.js";
+import { getSessionDir, readMetadata, archiveMetadata } from "../lib/metadata.js";
+import { formatAge } from "../lib/format.js";
+
+async function getTmuxSessions(): Promise<string[]> {
+  const output = await tmux("list-sessions", "-F", "#{session_name}");
+  if (!output) return [];
+  return output.split("\n").filter(Boolean);
+}
+
+async function getTmuxActivity(session: string): Promise<number | null> {
+  const output = await tmux(
+    "display-message",
+    "-t",
+    session,
+    "-p",
+    "#{session_activity}"
+  );
+  if (!output) return null;
+  const ts = parseInt(output, 10);
+  return isNaN(ts) ? null : ts * 1000;
+}
+
+async function killSession(
+  config: OrchestratorConfig,
+  projectId: string,
+  sessionName: string
+): Promise<void> {
+  const sessionDir = getSessionDir(config.dataDir, projectId);
+  const metaFile = `${sessionDir}/${sessionName}`;
+  const meta = readMetadata(metaFile);
+
+  // Kill tmux session
+  const killed = await tmux("kill-session", "-t", sessionName);
+  if (killed !== null) {
+    console.log(chalk.green(`  Killed tmux session: ${sessionName}`));
+  }
+
+  // Remove worktree if we know about it
+  const worktree = meta?.worktree;
+  if (worktree) {
+    const project = config.projects[projectId];
+    if (project) {
+      await git(["worktree", "remove", "--force", worktree], project.path);
+      console.log(chalk.green(`  Removed worktree: ${worktree}`));
+    }
+  }
+
+  // Archive metadata
+  archiveMetadata(sessionDir, sessionName);
+  console.log(chalk.green(`  Archived metadata`));
+}
+
+function findProjectForSession(
+  config: OrchestratorConfig,
+  sessionName: string
+): string | null {
+  for (const [id, project] of Object.entries(config.projects)) {
+    const prefix = project.sessionPrefix || id;
+    if (sessionName.startsWith(`${prefix}-`)) {
+      return id;
+    }
+  }
+  return null;
+}
+
+export function registerSession(program: Command): void {
+  const session = program
+    .command("session")
+    .description("Session management (ls, kill, cleanup)");
+
+  session
+    .command("ls")
+    .description("List all sessions")
+    .option("-p, --project <id>", "Filter by project ID")
+    .action(async (opts: { project?: string }) => {
+      const config = loadConfig();
+      const allTmux = await getTmuxSessions();
+      const projects = opts.project
+        ? { [opts.project]: config.projects[opts.project] }
+        : config.projects;
+
+      for (const [projectId, project] of Object.entries(projects)) {
+        const prefix = project.sessionPrefix || projectId;
+        const sessionDir = getSessionDir(config.dataDir, projectId);
+        const projectSessions = allTmux.filter((s) =>
+          s.startsWith(`${prefix}-`)
+        );
+
+        console.log(chalk.bold(`\n${project.name || projectId}:`));
+
+        if (projectSessions.length === 0) {
+          console.log(chalk.dim("  (no active sessions)"));
+          continue;
+        }
+
+        for (const name of projectSessions.sort()) {
+          const meta = readMetadata(`${sessionDir}/${name}`);
+          const activityTs = await getTmuxActivity(name);
+          const age = activityTs ? formatAge(activityTs) : "-";
+
+          let branchStr = meta?.branch || "";
+          if (meta?.worktree) {
+            const liveBranch = await git(
+              ["branch", "--show-current"],
+              meta.worktree
+            );
+            if (liveBranch) branchStr = liveBranch;
+          }
+
+          const parts = [chalk.green(name), chalk.dim(`(${age})`)];
+          if (branchStr) parts.push(chalk.cyan(branchStr));
+          if (meta?.status) parts.push(chalk.dim(`[${meta.status}]`));
+          if (meta?.pr) parts.push(chalk.blue(meta.pr));
+
+          console.log(`  ${parts.join("  ")}`);
+        }
+      }
+      console.log();
+    });
+
+  session
+    .command("kill")
+    .description("Kill a session and remove its worktree")
+    .argument("<session>", "Session name to kill")
+    .action(async (sessionName: string) => {
+      const config = loadConfig();
+      const projectId = findProjectForSession(config, sessionName);
+      if (!projectId) {
+        console.error(
+          chalk.red(`Could not determine project for session: ${sessionName}`)
+        );
+        process.exit(1);
+      }
+      await killSession(config, projectId, sessionName);
+      console.log(chalk.green(`\nSession ${sessionName} killed.`));
+    });
+
+  session
+    .command("cleanup")
+    .description("Kill sessions where PR is merged or issue is closed")
+    .option("-p, --project <id>", "Filter by project ID")
+    .option("--dry-run", "Show what would be cleaned up without doing it")
+    .action(async (opts: { project?: string; dryRun?: boolean }) => {
+      const config = loadConfig();
+      const allTmux = await getTmuxSessions();
+      const projects = opts.project
+        ? { [opts.project]: config.projects[opts.project] }
+        : config.projects;
+
+      console.log(chalk.bold("Checking for completed sessions...\n"));
+
+      let cleaned = 0;
+
+      for (const [projectId, project] of Object.entries(projects)) {
+        const prefix = project.sessionPrefix || projectId;
+        const sessionDir = getSessionDir(config.dataDir, projectId);
+        const projectSessions = allTmux.filter((s) =>
+          s.startsWith(`${prefix}-`)
+        );
+
+        for (const sessionName of projectSessions) {
+          const meta = readMetadata(`${sessionDir}/${sessionName}`);
+          if (!meta) continue;
+
+          let shouldKill = false;
+          let reason = "";
+
+          // Check if PR is merged
+          if (meta.pr) {
+            const prNum = meta.pr.match(/(\d+)\s*$/)?.[1];
+            if (prNum && project.repo) {
+              const state = await gh([
+                "pr",
+                "view",
+                prNum,
+                "--repo",
+                project.repo,
+                "--json",
+                "state",
+                "-q",
+                ".state",
+              ]);
+              if (state === "MERGED") {
+                shouldKill = true;
+                reason = `PR #${prNum} merged`;
+              }
+            }
+          }
+
+          if (shouldKill) {
+            if (opts.dryRun) {
+              console.log(
+                chalk.yellow(
+                  `  Would kill ${sessionName}: ${reason}`
+                )
+              );
+            } else {
+              console.log(
+                chalk.yellow(`  Killing ${sessionName}: ${reason}`)
+              );
+              await killSession(config, projectId, sessionName);
+              cleaned++;
+            }
+          }
+        }
+      }
+
+      if (cleaned === 0 && !opts.dryRun) {
+        console.log(chalk.dim("  No sessions to clean up."));
+      }
+      console.log(chalk.green(`\nCleanup complete. ${cleaned} sessions cleaned.`));
+    });
+}
