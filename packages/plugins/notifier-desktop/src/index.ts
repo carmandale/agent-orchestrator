@@ -15,11 +15,12 @@ export const manifest = {
   version: "0.1.0",
 };
 
-interface DesktopNotifierConfig {
-  /** Dashboard URL for click-through deep-links */
-  dashboardUrl?: string;
-  /** Whether to use sound for urgent notifications (default: true) */
-  sound?: boolean;
+/**
+ * Escape a string for safe interpolation inside AppleScript double-quoted strings.
+ * Handles backslashes and double quotes which would otherwise break or inject.
+ */
+export function escapeAppleScript(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 /**
@@ -50,30 +51,31 @@ function formatActionsMessage(event: OrchestratorEvent, actions: NotifyAction[])
 /**
  * Send a desktop notification using osascript (macOS) or notify-send (Linux).
  * Falls back gracefully if neither is available.
+ *
+ * Note: Desktop notifications do not support click-through URLs natively.
+ * On macOS, osascript's `display notification` lacks URL support.
+ * Consider `terminal-notifier` for click-to-open if needed in the future.
  */
 function sendNotification(
   title: string,
   message: string,
-  options: {
-    sound: boolean;
-    url?: string;
-  },
+  sound: boolean,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const os = platform();
 
     if (os === "darwin") {
-      // macOS: use osascript with display notification
-      const soundClause = options.sound ? ' sound name "default"' : "";
-      const script = `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)}${soundClause}`;
+      const safeTitle = escapeAppleScript(title);
+      const safeMessage = escapeAppleScript(message);
+      const soundClause = sound ? ' sound name "default"' : "";
+      const script = `display notification "${safeMessage}" with title "${safeTitle}"${soundClause}`;
       execFile("osascript", ["-e", script], (err) => {
         if (err) reject(err);
         else resolve();
       });
     } else if (os === "linux") {
-      // Linux: use notify-send
       const args = [title, message];
-      if (options.sound) {
+      if (sound) {
         args.push("--urgency=critical");
       }
       execFile("notify-send", args, (err) => {
@@ -81,7 +83,6 @@ function sendNotification(
         else resolve();
       });
     } else {
-      // Unsupported platform — log and resolve
       console.warn(`[notifier-desktop] Desktop notifications not supported on ${os}`);
       resolve();
     }
@@ -89,7 +90,6 @@ function sendNotification(
 }
 
 export function create(config?: Record<string, unknown>): Notifier {
-  const dashboardUrl = (config?.dashboardUrl as string) ?? "http://localhost:9847";
   const soundEnabled = (config?.sound as boolean) ?? true;
 
   return {
@@ -99,22 +99,16 @@ export function create(config?: Record<string, unknown>): Notifier {
       const title = formatTitle(event);
       const message = formatMessage(event);
       const sound = shouldPlaySound(event.priority, soundEnabled);
-
-      await sendNotification(title, message, {
-        sound,
-        url: `${dashboardUrl}/sessions/${event.sessionId}`,
-      });
+      await sendNotification(title, message, sound);
     },
 
     async notifyWithActions(event: OrchestratorEvent, actions: NotifyAction[]): Promise<void> {
+      // Desktop notifications cannot display interactive action buttons.
+      // Actions are rendered as text labels in the notification body as a fallback.
       const title = formatTitle(event);
       const message = formatActionsMessage(event, actions);
       const sound = shouldPlaySound(event.priority, soundEnabled);
-
-      await sendNotification(title, message, {
-        sound,
-        url: actions.find((a) => a.url)?.url ?? `${dashboardUrl}/sessions/${event.sessionId}`,
-      });
+      await sendNotification(title, message, sound);
     },
   };
 }

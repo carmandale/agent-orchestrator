@@ -6,7 +6,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { execFile } from "node:child_process";
-import { manifest, create } from "./index.js";
+import { manifest, create, escapeAppleScript } from "./index.js";
 
 const mockExecFile = execFile as unknown as Mock;
 
@@ -29,10 +29,6 @@ function makeSession(overrides: Partial<Session> = {}): Session {
   };
 }
 
-/**
- * Helper to simulate osascript calls.
- * Sets up mockExecFile to call the callback with the given stdout.
- */
 function simulateOsascript(stdout: string) {
   mockExecFile.mockImplementation(
     (_cmd: string, _args: string[], cb: (err: Error | null, stdout: string) => void) => {
@@ -66,17 +62,28 @@ describe("terminal-iterm2", () => {
     });
   });
 
+  describe("escapeAppleScript", () => {
+    it("escapes double quotes", () => {
+      expect(escapeAppleScript('hello "world"')).toBe('hello \\"world\\"');
+    });
+
+    it("escapes backslashes", () => {
+      expect(escapeAppleScript("path\\to\\file")).toBe("path\\\\to\\\\file");
+    });
+
+    it("escapes both backslashes and quotes together", () => {
+      expect(escapeAppleScript('a\\b"c')).toBe('a\\\\b\\"c');
+    });
+
+    it("returns plain strings unchanged", () => {
+      expect(escapeAppleScript("hello-world_123")).toBe("hello-world_123");
+    });
+  });
+
   describe("create", () => {
     it("returns a terminal with name 'iterm2'", () => {
       const terminal = create();
       expect(terminal.name).toBe("iterm2");
-    });
-
-    it("has openSession, openAll, and isSessionOpen methods", () => {
-      const terminal = create();
-      expect(typeof terminal.openSession).toBe("function");
-      expect(typeof terminal.openAll).toBe("function");
-      expect(typeof terminal.isSessionOpen).toBe("function");
     });
   });
 
@@ -86,7 +93,6 @@ describe("terminal-iterm2", () => {
       const terminal = create();
       await terminal.openSession(makeSession({ id: "backend-5" }));
 
-      // Two calls: findAndSelectExistingTab (NOT_FOUND) then openNewTab
       expect(mockExecFile).toHaveBeenCalledTimes(2);
       const newTabScript = mockExecFile.mock.calls[1][1][1] as string;
       expect(newTabScript).toContain("backend-5");
@@ -112,7 +118,6 @@ describe("terminal-iterm2", () => {
       const terminal = create();
       await terminal.openSession(makeSession());
 
-      // Only one call: findAndSelectExistingTab (FOUND) — no openNewTab
       expect(mockExecFile).toHaveBeenCalledTimes(1);
     });
 
@@ -121,22 +126,35 @@ describe("terminal-iterm2", () => {
       const terminal = create();
       await terminal.openSession(makeSession());
 
-      // Two calls: findAndSelectExistingTab (NOT_FOUND) + openNewTab
       expect(mockExecFile).toHaveBeenCalledTimes(2);
+    });
+
+    it("escapes special chars in session name for AppleScript", async () => {
+      simulateOsascript("NOT_FOUND\n");
+      const terminal = create();
+      await terminal.openSession(makeSession({ id: 'session"with"quotes' }));
+
+      const findScript = mockExecFile.mock.calls[0][1][1] as string;
+      expect(findScript).toContain('session\\"with\\"quotes');
+      expect(findScript).not.toContain('session"with"quotes');
+
+      const openScript = mockExecFile.mock.calls[1][1][1] as string;
+      expect(openScript).toContain('session\\"with\\"quotes');
     });
   });
 
   describe("AppleScript commands", () => {
-    it("findAndSelectExistingTab checks profile name", async () => {
+    it("findAndSelectExistingTab checks profile name and selects", async () => {
       simulateOsascript("NOT_FOUND\n");
       const terminal = create();
       await terminal.openSession(makeSession({ id: "my-session" }));
 
       const findScript = mockExecFile.mock.calls[0][1][1] as string;
       expect(findScript).toContain('tell application "iTerm2"');
-      expect(findScript).toContain("repeat with aWindow in windows");
       expect(findScript).toContain("profile name of aSession");
       expect(findScript).toContain('"my-session"');
+      expect(findScript).toContain("select aWindow");
+      expect(findScript).toContain("select aTab");
     });
 
     it("openNewTab creates tab and attaches to tmux", async () => {
@@ -148,17 +166,6 @@ describe("terminal-iterm2", () => {
       expect(openScript).toContain("create tab with default profile");
       expect(openScript).toContain('set name to "app-7"');
       expect(openScript).toContain("tmux attach -t app-7");
-    });
-
-    it("openNewTab sets terminal title via escape sequence", async () => {
-      simulateOsascript("NOT_FOUND\n");
-      const terminal = create();
-      await terminal.openSession(makeSession({ id: "test-1" }));
-
-      const openScript = mockExecFile.mock.calls[1][1][1] as string;
-      // Should set tab title via printf escape code
-      expect(openScript).toContain("printf");
-      expect(openScript).toContain("test-1");
     });
 
     it("always calls osascript as the command", async () => {
@@ -181,7 +188,6 @@ describe("terminal-iterm2", () => {
     });
 
     it("opens tabs for each session", async () => {
-      // All sessions are NOT_FOUND
       simulateOsascript("NOT_FOUND\n");
       const terminal = create();
       const sessions = [
@@ -190,7 +196,6 @@ describe("terminal-iterm2", () => {
       ];
 
       const promise = terminal.openAll(sessions);
-      // Advance past delays (300ms per session)
       await vi.advanceTimersByTimeAsync(300);
       await vi.advanceTimersByTimeAsync(300);
       await promise;
@@ -200,7 +205,6 @@ describe("terminal-iterm2", () => {
     });
 
     it("skips opening tabs for existing sessions", async () => {
-      // First session found, second not found
       simulateOsascriptSequence(["FOUND\n", "NOT_FOUND\n", ""]);
       const terminal = create();
       const sessions = [
@@ -242,6 +246,17 @@ describe("terminal-iterm2", () => {
       const terminal = create();
       const result = await terminal.isSessionOpen!(makeSession());
       expect(result).toBe(false);
+    });
+
+    it("does NOT select the tab (no side effect)", async () => {
+      simulateOsascript("FOUND\n");
+      const terminal = create();
+      await terminal.isSessionOpen!(makeSession({ id: "check-only" }));
+
+      // isSessionOpen uses hasExistingTab which does NOT contain select commands
+      const script = mockExecFile.mock.calls[0][1][1] as string;
+      expect(script).not.toContain("select aWindow");
+      expect(script).not.toContain("select aTab");
     });
   });
 });

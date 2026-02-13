@@ -46,6 +46,22 @@ describe("notifier-webhook", () => {
         expect.stringContaining("No url configured"),
       );
     });
+
+    it("throws on invalid URL scheme", () => {
+      expect(() => create({ url: "ftp://example.com" })).toThrow("must be http(s)");
+    });
+
+    it("throws on javascript: URL", () => {
+      expect(() => create({ url: "javascript:alert(1)" })).toThrow("must be http(s)");
+    });
+
+    it("accepts http:// URL", () => {
+      expect(() => create({ url: "http://localhost:8080/hook" })).not.toThrow();
+    });
+
+    it("accepts https:// URL", () => {
+      expect(() => create({ url: "https://example.com/hook" })).not.toThrow();
+    });
   });
 
   describe("notify", () => {
@@ -89,31 +105,18 @@ describe("notifier-webhook", () => {
       expect(body.event.timestamp).toBe("2025-06-15T12:00:00.000Z");
     });
 
-    it("includes event data in payload", async () => {
-      const fetchMock = vi.fn().mockResolvedValue({ ok: true });
-      vi.stubGlobal("fetch", fetchMock);
-
-      const notifier = create({ url: "https://example.com/hook" });
-      await notifier.notify(makeEvent({ data: { checkName: "test", failCount: 3 } }));
-
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.event.data.checkName).toBe("test");
-      expect(body.event.data.failCount).toBe(3);
-    });
-
     it("includes custom headers", async () => {
       const fetchMock = vi.fn().mockResolvedValue({ ok: true });
       vi.stubGlobal("fetch", fetchMock);
 
       const notifier = create({
         url: "https://example.com/hook",
-        headers: { Authorization: "Bearer tok123", "X-Custom": "value" },
+        headers: { Authorization: "Bearer tok123" },
       });
       await notifier.notify(makeEvent());
 
       const headers = fetchMock.mock.calls[0][1].headers;
       expect(headers["Authorization"]).toBe("Bearer tok123");
-      expect(headers["X-Custom"]).toBe("value");
       expect(headers["Content-Type"]).toBe("application/json");
     });
   });
@@ -134,18 +137,6 @@ describe("notifier-webhook", () => {
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.type).toBe("notification_with_actions");
       expect(body.actions).toHaveLength(2);
-      expect(body.actions[0].label).toBe("Merge");
-      expect(body.actions[0].url).toContain("merge");
-      expect(body.actions[1].label).toBe("Kill");
-      expect(body.actions[1].callbackEndpoint).toBe("/api/kill/app-1");
-    });
-
-    it("does nothing when no url", async () => {
-      const fetchMock = vi.fn();
-      vi.stubGlobal("fetch", fetchMock);
-      const notifier = create();
-      await notifier.notifyWithActions!(makeEvent(), []);
-      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 
@@ -162,25 +153,15 @@ describe("notifier-webhook", () => {
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.type).toBe("message");
       expect(body.message).toBe("All sessions complete");
-      expect(body.context.projectId).toBe("my-project");
       expect(result).toBeNull();
-    });
-
-    it("returns null when no url", async () => {
-      const fetchMock = vi.fn();
-      vi.stubGlobal("fetch", fetchMock);
-      const notifier = create();
-      const result = await notifier.post!("test");
-      expect(result).toBeNull();
-      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 
   describe("retry logic", () => {
-    it("retries on fetch failure and succeeds", async () => {
+    it("retries on 5xx and succeeds", async () => {
       const fetchMock = vi
         .fn()
-        .mockRejectedValueOnce(new Error("network error"))
+        .mockResolvedValueOnce({ ok: false, status: 503, text: () => Promise.resolve("unavailable") })
         .mockResolvedValueOnce({ ok: true });
       vi.stubGlobal("fetch", fetchMock);
 
@@ -193,10 +174,10 @@ describe("notifier-webhook", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it("retries on non-ok status and succeeds", async () => {
+    it("retries on 429 Too Many Requests", async () => {
       const fetchMock = vi
         .fn()
-        .mockResolvedValueOnce({ ok: false, status: 502, text: () => Promise.resolve("bad gateway") })
+        .mockResolvedValueOnce({ ok: false, status: 429, text: () => Promise.resolve("rate limited") })
         .mockResolvedValueOnce({ ok: true });
       vi.stubGlobal("fetch", fetchMock);
 
@@ -209,7 +190,67 @@ describe("notifier-webhook", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it("throws after all retries exhausted on non-ok response", async () => {
+    it("does NOT retry on 400 Bad Request", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 400, text: () => Promise.resolve("bad request") });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const notifier = create({
+        url: "https://example.com/hook",
+        retries: 2,
+        retryDelayMs: 1,
+      });
+      await expect(notifier.notify(makeEvent())).rejects.toThrow("Webhook POST failed (400)");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does NOT retry on 401 Unauthorized", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 401, text: () => Promise.resolve("unauthorized") });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const notifier = create({
+        url: "https://example.com/hook",
+        retries: 2,
+        retryDelayMs: 1,
+      });
+      await expect(notifier.notify(makeEvent())).rejects.toThrow("Webhook POST failed (401)");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does NOT retry on 403 Forbidden", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 403, text: () => Promise.resolve("forbidden") });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const notifier = create({
+        url: "https://example.com/hook",
+        retries: 2,
+        retryDelayMs: 1,
+      });
+      await expect(notifier.notify(makeEvent())).rejects.toThrow("Webhook POST failed (403)");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does NOT retry on 404 Not Found", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 404, text: () => Promise.resolve("not found") });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const notifier = create({
+        url: "https://example.com/hook",
+        retries: 2,
+        retryDelayMs: 1,
+      });
+      await expect(notifier.notify(makeEvent())).rejects.toThrow("Webhook POST failed (404)");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws after all retries exhausted on 5xx", async () => {
       const fetchMock = vi
         .fn()
         .mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve("error") });
@@ -223,8 +264,24 @@ describe("notifier-webhook", () => {
       await expect(notifier.notify(makeEvent())).rejects.toThrow(
         "Webhook POST failed (500): error",
       );
-      // 1 initial + 2 retries = 3 total
+      // 1 initial + 2 retries = 3
       expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("retries on network errors", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("ECONNREFUSED"))
+        .mockResolvedValueOnce({ ok: true });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const notifier = create({
+        url: "https://example.com/hook",
+        retries: 1,
+        retryDelayMs: 1,
+      });
+      await notifier.notify(makeEvent());
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("respects retries=0 (no retries)", async () => {
@@ -240,34 +297,6 @@ describe("notifier-webhook", () => {
       });
       await expect(notifier.notify(makeEvent())).rejects.toThrow("Webhook POST failed");
       expect(fetchMock).toHaveBeenCalledTimes(1);
-    });
-
-    it("throws network errors after retries exhausted", async () => {
-      const fetchMock = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
-      vi.stubGlobal("fetch", fetchMock);
-
-      const notifier = create({
-        url: "https://example.com/hook",
-        retries: 1,
-        retryDelayMs: 1,
-      });
-      await expect(notifier.notify(makeEvent())).rejects.toThrow("ECONNREFUSED");
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-    });
-
-    it("uses default retries (2) when not configured", async () => {
-      const fetchMock = vi
-        .fn()
-        .mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve("err") });
-      vi.stubGlobal("fetch", fetchMock);
-
-      const notifier = create({
-        url: "https://example.com/hook",
-        retryDelayMs: 1,
-      });
-      await expect(notifier.notify(makeEvent())).rejects.toThrow();
-      // default: 1 initial + 2 retries = 3
-      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
   });
 });

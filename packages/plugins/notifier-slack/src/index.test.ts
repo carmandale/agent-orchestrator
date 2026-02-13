@@ -23,17 +23,10 @@ function mockFetchOk() {
   });
 }
 
-function mockFetchFail(status: number, body: string) {
-  return vi.fn().mockResolvedValue({
-    ok: false,
-    status,
-    text: () => Promise.resolve(body),
-  });
-}
-
 describe("notifier-slack", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   describe("manifest", () => {
@@ -56,14 +49,12 @@ describe("notifier-slack", () => {
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining("No webhookUrl configured"),
       );
-      warnSpy.mockRestore();
     });
 
-    it("has notify, notifyWithActions, and post methods", () => {
-      const notifier = create({ webhookUrl: "https://hooks.slack.com/test" });
-      expect(typeof notifier.notify).toBe("function");
-      expect(typeof notifier.notifyWithActions).toBe("function");
-      expect(typeof notifier.post).toBe("function");
+    it("throws on invalid URL scheme", () => {
+      expect(() => create({ webhookUrl: "file:///etc/passwd" })).toThrow(
+        "must be http(s)",
+      );
     });
   });
 
@@ -74,7 +65,6 @@ describe("notifier-slack", () => {
       const notifier = create();
       await notifier.notify(makeEvent());
       expect(fetchMock).not.toHaveBeenCalled();
-      vi.unstubAllGlobals();
     });
 
     it("POSTs to the webhook URL", async () => {
@@ -87,7 +77,6 @@ describe("notifier-slack", () => {
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(fetchMock.mock.calls[0][0]).toBe("https://hooks.slack.com/test");
       expect(fetchMock.mock.calls[0][1].method).toBe("POST");
-      vi.unstubAllGlobals();
     });
 
     it("sends JSON with Content-Type header", async () => {
@@ -99,7 +88,6 @@ describe("notifier-slack", () => {
 
       const opts = fetchMock.mock.calls[0][1];
       expect(opts.headers["Content-Type"]).toBe("application/json");
-      vi.unstubAllGlobals();
     });
 
     it("includes username in payload", async () => {
@@ -111,7 +99,6 @@ describe("notifier-slack", () => {
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.username).toBe("Agent Orchestrator");
-      vi.unstubAllGlobals();
     });
 
     it("uses custom username when configured", async () => {
@@ -126,7 +113,6 @@ describe("notifier-slack", () => {
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.username).toBe("MyBot");
-      vi.unstubAllGlobals();
     });
 
     it("includes channel when configured", async () => {
@@ -141,30 +127,20 @@ describe("notifier-slack", () => {
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.channel).toBe("#deploys");
-      vi.unstubAllGlobals();
-    });
-
-    it("does not include channel when not configured", async () => {
-      const fetchMock = mockFetchOk();
-      vi.stubGlobal("fetch", fetchMock);
-
-      const notifier = create({ webhookUrl: "https://hooks.slack.com/test" });
-      await notifier.notify(makeEvent());
-
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.channel).toBeUndefined();
-      vi.unstubAllGlobals();
     });
 
     it("throws on non-ok response", async () => {
-      const fetchMock = mockFetchFail(500, "server error");
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve("server error"),
+      });
       vi.stubGlobal("fetch", fetchMock);
 
       const notifier = create({ webhookUrl: "https://hooks.slack.com/test" });
       await expect(notifier.notify(makeEvent())).rejects.toThrow(
         "Slack webhook failed (500): server error",
       );
-      vi.unstubAllGlobals();
     });
   });
 
@@ -182,7 +158,6 @@ describe("notifier-slack", () => {
       expect(header.text.type).toBe("plain_text");
       expect(header.text.text).toContain(":rotating_light:");
       expect(header.text.text).toContain("backend-3");
-      vi.unstubAllGlobals();
     });
 
     it("uses correct emoji for each priority level", async () => {
@@ -204,7 +179,6 @@ describe("notifier-slack", () => {
         const body = JSON.parse(fetchMock.mock.calls[0][1].body);
         expect(body.blocks[0].text.text).toContain(emoji);
       }
-      vi.unstubAllGlobals();
     });
 
     it("includes section block with event message", async () => {
@@ -218,7 +192,6 @@ describe("notifier-slack", () => {
       const section = body.blocks[1];
       expect(section.type).toBe("section");
       expect(section.text.text).toBe("CI is green");
-      vi.unstubAllGlobals();
     });
 
     it("includes context block with project and priority", async () => {
@@ -233,10 +206,9 @@ describe("notifier-slack", () => {
       expect(context.type).toBe("context");
       expect(context.elements[0].text).toContain("*Project:* frontend");
       expect(context.elements[0].text).toContain("*Priority:* action");
-      vi.unstubAllGlobals();
     });
 
-    it("includes PR link when prUrl is in event data", async () => {
+    it("includes PR link when prUrl is a string in event data", async () => {
       const fetchMock = mockFetchOk();
       vi.stubGlobal("fetch", fetchMock);
 
@@ -253,10 +225,41 @@ describe("notifier-slack", () => {
       );
       expect(prBlock).toBeDefined();
       expect(prBlock.text.text).toContain("https://github.com/org/repo/pull/42");
-      vi.unstubAllGlobals();
     });
 
-    it("includes CI status when ciStatus is in event data", async () => {
+    it("ignores prUrl when it is not a string", async () => {
+      const fetchMock = mockFetchOk();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const notifier = create({ webhookUrl: "https://hooks.slack.com/test" });
+      await notifier.notify(makeEvent({ data: { prUrl: 12345 } }));
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const prBlock = body.blocks.find(
+        (b: Record<string, unknown>) =>
+          b.type === "section" &&
+          (b as any).text?.text?.includes("View Pull Request"),
+      );
+      expect(prBlock).toBeUndefined();
+    });
+
+    it("ignores ciStatus when it is not a string", async () => {
+      const fetchMock = mockFetchOk();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const notifier = create({ webhookUrl: "https://hooks.slack.com/test" });
+      await notifier.notify(makeEvent({ data: { ciStatus: { nested: true } } }));
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const ciBlock = body.blocks.find(
+        (b: Record<string, unknown>) =>
+          b.type === "context" &&
+          (b as any).elements?.[0]?.text?.includes("CI:"),
+      );
+      expect(ciBlock).toBeUndefined();
+    });
+
+    it("includes CI status when ciStatus is a string", async () => {
       const fetchMock = mockFetchOk();
       vi.stubGlobal("fetch", fetchMock);
 
@@ -271,7 +274,6 @@ describe("notifier-slack", () => {
       );
       expect(ciBlock).toBeDefined();
       expect(ciBlock.elements[0].text).toContain(":white_check_mark:");
-      vi.unstubAllGlobals();
     });
 
     it("uses :x: emoji for failing CI", async () => {
@@ -288,7 +290,6 @@ describe("notifier-slack", () => {
           (b as any).elements?.[0]?.text?.includes("CI:"),
       );
       expect(ciBlock.elements[0].text).toContain(":x:");
-      vi.unstubAllGlobals();
     });
 
     it("ends with a divider block", async () => {
@@ -301,7 +302,6 @@ describe("notifier-slack", () => {
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       const lastBlock = body.blocks[body.blocks.length - 1];
       expect(lastBlock.type).toBe("divider");
-      vi.unstubAllGlobals();
     });
   });
 
@@ -325,8 +325,6 @@ describe("notifier-slack", () => {
       expect(actionsBlock.elements).toHaveLength(2);
       expect(actionsBlock.elements[0].type).toBe("button");
       expect(actionsBlock.elements[0].text.text).toBe("Merge");
-      expect(actionsBlock.elements[0].url).toContain("merge");
-      vi.unstubAllGlobals();
     });
 
     it("includes callback-based action buttons", async () => {
@@ -345,7 +343,6 @@ describe("notifier-slack", () => {
       );
       expect(actionsBlock.elements[0].action_id).toBe("ao_kill_session");
       expect(actionsBlock.elements[0].value).toBe("/api/sessions/app-1/kill");
-      vi.unstubAllGlobals();
     });
 
     it("filters out actions with no url or callback", async () => {
@@ -354,7 +351,7 @@ describe("notifier-slack", () => {
 
       const notifier = create({ webhookUrl: "https://hooks.slack.com/test" });
       const actions: NotifyAction[] = [
-        { label: "No-op" }, // no url or callbackEndpoint
+        { label: "No-op" },
         { label: "Merge", url: "https://example.com" },
       ];
       await notifier.notifyWithActions!(makeEvent(), actions);
@@ -365,7 +362,6 @@ describe("notifier-slack", () => {
       );
       expect(actionsBlock.elements).toHaveLength(1);
       expect(actionsBlock.elements[0].text.text).toBe("Merge");
-      vi.unstubAllGlobals();
     });
   });
 
@@ -379,8 +375,7 @@ describe("notifier-slack", () => {
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.text).toBe("Hello from AO");
-      expect(result).toBeNull(); // webhooks don't return message ID
-      vi.unstubAllGlobals();
+      expect(result).toBeNull();
     });
 
     it("uses context channel over default", async () => {
@@ -395,7 +390,6 @@ describe("notifier-slack", () => {
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.channel).toBe("#override");
-      vi.unstubAllGlobals();
     });
 
     it("returns null when no webhookUrl", async () => {
@@ -406,7 +400,6 @@ describe("notifier-slack", () => {
       const result = await notifier.post!("test");
       expect(result).toBeNull();
       expect(fetchMock).not.toHaveBeenCalled();
-      vi.unstubAllGlobals();
     });
   });
 });

@@ -13,17 +13,6 @@ export const manifest = {
   version: "0.1.0",
 };
 
-interface WebhookNotifierConfig {
-  /** Target URL to POST events to */
-  url?: string;
-  /** Custom headers to include (e.g. Authorization) */
-  headers?: Record<string, string>;
-  /** Maximum retry attempts on failure (default: 2) */
-  retries?: number;
-  /** Retry delay in ms (default: 1000) */
-  retryDelayMs?: number;
-}
-
 interface WebhookPayload {
   type: "notification" | "notification_with_actions" | "message";
   event?: {
@@ -43,6 +32,15 @@ interface WebhookPayload {
   }>;
   message?: string;
   context?: NotifyContext;
+}
+
+/**
+ * Returns true if the HTTP status code should be retried.
+ * Only 429 (Too Many Requests) and 5xx (server errors) are retryable.
+ * 4xx client errors (400, 401, 403, 404, etc.) are permanent failures.
+ */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
 }
 
 async function postWithRetry(
@@ -69,12 +67,20 @@ async function postWithRetry(
 
       const body = await response.text();
       lastError = new Error(`Webhook POST failed (${response.status}): ${body}`);
+
+      // Only retry on 429 or 5xx — 4xx client errors are permanent
+      if (!isRetryableStatus(response.status)) {
+        throw lastError;
+      }
     } catch (err) {
+      if (err === lastError) throw err; // Re-throw non-retryable errors from above
       lastError = err instanceof Error ? err : new Error(String(err));
     }
 
     if (attempt < retries) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      // Exponential backoff: delay * 2^attempt
+      const delay = retryDelayMs * 2 ** attempt;
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 
@@ -94,6 +100,12 @@ function serializeEvent(event: OrchestratorEvent): WebhookPayload["event"] {
   };
 }
 
+function validateUrl(url: string, label: string): void {
+  if (!url.startsWith("https://") && !url.startsWith("http://")) {
+    throw new Error(`[${label}] Invalid url: must be http(s), got "${url}"`);
+  }
+}
+
 export function create(config?: Record<string, unknown>): Notifier {
   const url = config?.url as string | undefined;
   const customHeaders = (config?.headers as Record<string, string>) ?? {};
@@ -102,6 +114,8 @@ export function create(config?: Record<string, unknown>): Notifier {
 
   if (!url) {
     console.warn("[notifier-webhook] No url configured — notifications will be no-ops");
+  } else {
+    validateUrl(url, "notifier-webhook");
   }
 
   return {

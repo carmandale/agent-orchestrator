@@ -13,7 +13,7 @@ vi.mock("node:os", () => ({
 
 import { execFile } from "node:child_process";
 import { platform } from "node:os";
-import { manifest, create } from "./index.js";
+import { manifest, create, escapeAppleScript } from "./index.js";
 
 const mockExecFile = execFile as unknown as Mock;
 const mockPlatform = platform as unknown as Mock;
@@ -36,7 +36,6 @@ describe("notifier-desktop", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPlatform.mockReturnValue("darwin");
-    // Default: execFile succeeds
     mockExecFile.mockImplementation(
       (_cmd: string, _args: string[], cb: (err: Error | null) => void) => {
         cb(null);
@@ -49,6 +48,24 @@ describe("notifier-desktop", () => {
       expect(manifest.name).toBe("desktop");
       expect(manifest.slot).toBe("notifier");
       expect(manifest.version).toBe("0.1.0");
+    });
+  });
+
+  describe("escapeAppleScript", () => {
+    it("escapes double quotes", () => {
+      expect(escapeAppleScript('hello "world"')).toBe('hello \\"world\\"');
+    });
+
+    it("escapes backslashes", () => {
+      expect(escapeAppleScript("path\\to\\file")).toBe("path\\\\to\\\\file");
+    });
+
+    it("escapes both backslashes and quotes", () => {
+      expect(escapeAppleScript('say \\"hi\\"')).toBe('say \\\\\\"hi\\\\\\"');
+    });
+
+    it("returns plain strings unchanged", () => {
+      expect(escapeAppleScript("hello world")).toBe("hello world");
     });
   });
 
@@ -146,6 +163,19 @@ describe("notifier-desktop", () => {
       const script = mockExecFile.mock.calls[0][1][1] as string;
       expect(script).not.toContain("sound name");
     });
+
+    it("escapes special characters in title and message", async () => {
+      const notifier = create();
+      await notifier.notify(
+        makeEvent({ sessionId: 'test"inject', message: 'msg with "quotes" and \\backslash' }),
+      );
+
+      const script = mockExecFile.mock.calls[0][1][1] as string;
+      // Should not contain unescaped quotes (other than the AppleScript string delimiters)
+      expect(script).toContain('test\\"inject');
+      expect(script).toContain('\\"quotes\\"');
+      expect(script).toContain("\\\\backslash");
+    });
   });
 
   describe("notify on Linux", () => {
@@ -226,19 +256,6 @@ describe("notifier-desktop", () => {
       );
       const notifier = create();
       await expect(notifier.notify(makeEvent())).rejects.toThrow("osascript not found");
-    });
-  });
-
-  describe("config", () => {
-    it("uses default dashboardUrl when not configured", () => {
-      const notifier = create();
-      expect(notifier.name).toBe("desktop");
-      // We can't directly test the URL, but the plugin should create without error
-    });
-
-    it("accepts custom dashboardUrl", () => {
-      const notifier = create({ dashboardUrl: "https://my-dashboard.com" });
-      expect(notifier.name).toBe("desktop");
     });
   });
 });

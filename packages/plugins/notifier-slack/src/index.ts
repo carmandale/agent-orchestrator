@@ -14,27 +14,11 @@ export const manifest = {
   version: "0.1.0",
 };
 
-interface SlackNotifierConfig {
-  /** Slack Incoming Webhook URL */
-  webhookUrl?: string;
-  /** Default channel override (optional, webhook has a default) */
-  channel?: string;
-  /** Bot username */
-  username?: string;
-}
-
 const PRIORITY_EMOJI: Record<EventPriority, string> = {
   urgent: ":rotating_light:",
   action: ":point_right:",
   warning: ":warning:",
   info: ":information_source:",
-};
-
-const PRIORITY_COLOR: Record<EventPriority, string> = {
-  urgent: "#FF0000",
-  action: "#FF9900",
-  warning: "#FFCC00",
-  info: "#36A64F",
 };
 
 function buildBlocks(
@@ -68,8 +52,8 @@ function buildBlocks(
     },
   ];
 
-  // Add PR link if available
-  const prUrl = event.data.prUrl as string | undefined;
+  // Add PR link if available (type-guarded)
+  const prUrl = typeof event.data.prUrl === "string" ? event.data.prUrl : undefined;
   if (prUrl) {
     blocks.push({
       type: "section",
@@ -80,8 +64,8 @@ function buildBlocks(
     });
   }
 
-  // Add CI status if available
-  const ciStatus = event.data.ciStatus as string | undefined;
+  // Add CI status if available (type-guarded)
+  const ciStatus = typeof event.data.ciStatus === "string" ? event.data.ciStatus : undefined;
   if (ciStatus) {
     const ciEmoji = ciStatus === "passing" ? ":white_check_mark:" : ":x:";
     blocks.push({
@@ -144,6 +128,12 @@ async function postToWebhook(
   }
 }
 
+function validateUrl(url: string, label: string): void {
+  if (!url.startsWith("https://") && !url.startsWith("http://")) {
+    throw new Error(`[${label}] Invalid webhookUrl: must be http(s), got "${url}"`);
+  }
+}
+
 export function create(config?: Record<string, unknown>): Notifier {
   const webhookUrl = config?.webhookUrl as string | undefined;
   const defaultChannel = config?.channel as string | undefined;
@@ -151,6 +141,8 @@ export function create(config?: Record<string, unknown>): Notifier {
 
   if (!webhookUrl) {
     console.warn("[notifier-slack] No webhookUrl configured — notifications will be no-ops");
+  } else {
+    validateUrl(webhookUrl, "notifier-slack");
   }
 
   return {

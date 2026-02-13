@@ -13,6 +13,14 @@ export const manifest = {
 };
 
 /**
+ * Escape a string for safe interpolation inside AppleScript double-quoted strings.
+ * Handles backslashes and double quotes which would otherwise break or inject.
+ */
+export function escapeAppleScript(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/**
  * Run an AppleScript snippet and return stdout.
  */
 function runAppleScript(script: string): Promise<string> {
@@ -29,15 +37,42 @@ function runAppleScript(script: string): Promise<string> {
  * Returns true if found (and selects it), false otherwise.
  */
 async function findAndSelectExistingTab(sessionName: string): Promise<boolean> {
+  const safe = escapeAppleScript(sessionName);
   const script = `
 tell application "iTerm2"
     repeat with aWindow in windows
         repeat with aTab in tabs of aWindow
             repeat with aSession in sessions of aTab
                 try
-                    if profile name of aSession is equal to "${sessionName}" then
+                    if profile name of aSession is equal to "${safe}" then
                         select aWindow
                         select aTab
+                        return "FOUND"
+                    end if
+                end try
+            end repeat
+        end repeat
+    end repeat
+    return "NOT_FOUND"
+end tell`;
+
+  const result = await runAppleScript(script);
+  return result === "FOUND";
+}
+
+/**
+ * Check if an iTerm2 tab exists for this session WITHOUT selecting it.
+ * Pure query — no side effects on the UI.
+ */
+async function hasExistingTab(sessionName: string): Promise<boolean> {
+  const safe = escapeAppleScript(sessionName);
+  const script = `
+tell application "iTerm2"
+    repeat with aWindow in windows
+        repeat with aTab in tabs of aWindow
+            repeat with aSession in sessions of aTab
+                try
+                    if profile name of aSession is equal to "${safe}" then
                         return "FOUND"
                     end if
                 end try
@@ -55,32 +90,16 @@ end tell`;
  * Open a new iTerm2 tab and attach to the given tmux session.
  */
 async function openNewTab(sessionName: string): Promise<void> {
+  const safe = escapeAppleScript(sessionName);
   const script = `
 tell application "iTerm2"
     activate
     tell current window
         create tab with default profile
         tell current session
-            set name to "${sessionName}"
-            write text "printf '\\\\033]0;${sessionName}\\\\007' && tmux attach -t ${sessionName}"
+            set name to "${safe}"
+            write text "printf '\\\\033]0;${safe}\\\\007' && tmux attach -t ${safe}"
         end tell
-    end tell
-end tell`;
-
-  await runAppleScript(script);
-}
-
-/**
- * Open a new iTerm2 window with the first session, then add tabs for the rest.
- */
-async function openNewWindow(sessionName: string): Promise<void> {
-  const script = `
-tell application "iTerm2"
-    activate
-    set newWindow to (create window with default profile)
-    tell current session of newWindow
-        set name to "${sessionName}"
-        write text "printf '\\\\033]0;${sessionName}\\\\007' && tmux attach -t ${sessionName}"
     end tell
 end tell`;
 
@@ -123,7 +142,8 @@ export function create(): Terminal {
     async isSessionOpen(session: Session): Promise<boolean> {
       const sessionName = getSessionName(session);
       try {
-        return await findAndSelectExistingTab(sessionName);
+        // Query-only check — does NOT select/focus the tab
+        return await hasExistingTab(sessionName);
       } catch {
         return false;
       }
