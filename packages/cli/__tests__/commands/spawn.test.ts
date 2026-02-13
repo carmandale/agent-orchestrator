@@ -154,7 +154,12 @@ describe("spawn command", () => {
 
   it("creates detached worktree when no issue provided", async () => {
     mockTmux.mockResolvedValue(null);
-    mockGit.mockResolvedValue(null);
+    // Worktree add succeeds (returns empty string), branch --show-current returns null (detached)
+    mockGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree") return "";
+      if (args[0] === "branch") return null;
+      return "";
+    });
 
     await program.parseAsync(["node", "test", "spawn", "my-app"]);
 

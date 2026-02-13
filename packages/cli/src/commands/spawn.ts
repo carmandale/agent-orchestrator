@@ -62,10 +62,19 @@ async function spawnSession(
       );
       if (result === null) {
         // Branch already exists — check it out in the new worktree
-        await git(["worktree", "add", worktreePath, branch], project.path);
+        const fallback = await git(["worktree", "add", worktreePath, branch], project.path);
+        if (fallback === null) {
+          throw new Error(`Failed to create worktree at ${worktreePath} for branch ${branch}`);
+        }
       }
     } else {
-      await git(["worktree", "add", worktreePath, defaultRef, "--detach"], project.path);
+      const detached = await git(
+        ["worktree", "add", worktreePath, defaultRef, "--detach"],
+        project.path,
+      );
+      if (detached === null) {
+        throw new Error(`Failed to create detached worktree at ${worktreePath}`);
+      }
     }
 
     spinner.text = "Setting up workspace";

@@ -115,10 +115,19 @@ export function registerReviewCheck(program: Command): void {
         }
 
         if (!opts.dryRun) {
-          const message =
-            "There are review comments on your PR. Check with `gh pr view --comments` and `gh api` for inline comments. Address each one, push fixes, and reply.";
-          await exec("tmux", ["send-keys", "-t", result.session, message, "Enter"]);
-          console.log(chalk.green(`    -> Fix prompt sent`));
+          try {
+            // Interrupt busy agent and clear partial input before sending
+            await exec("tmux", ["send-keys", "-t", result.session, "C-c"]);
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            await exec("tmux", ["send-keys", "-t", result.session, "C-u"]);
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            const message =
+              "There are review comments on your PR. Check with `gh pr view --comments` and `gh api` for inline comments. Address each one, push fixes, and reply.";
+            await exec("tmux", ["send-keys", "-t", result.session, message, "Enter"]);
+            console.log(chalk.green(`    -> Fix prompt sent`));
+          } catch (err) {
+            console.error(chalk.red(`    -> Failed to send: ${err}`));
+          }
         } else {
           console.log(chalk.dim(`    (dry run — would send fix prompt)`));
         }
