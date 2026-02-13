@@ -26,6 +26,15 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout.trimEnd();
 }
 
+/** Only allow safe characters in path segments to prevent directory traversal */
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+
+function assertSafePathSegment(value: string, label: string): void {
+  if (!SAFE_PATH_SEGMENT.test(value)) {
+    throw new Error(`Invalid ${label} "${value}": must match ${SAFE_PATH_SEGMENT}`);
+  }
+}
+
 /** Expand ~ to home directory */
 function expandPath(p: string): string {
   if (p.startsWith("~/")) {
@@ -43,6 +52,9 @@ export function create(config?: Record<string, unknown>): Workspace {
     name: "worktree",
 
     async create(cfg: WorkspaceCreateConfig): Promise<WorkspaceInfo> {
+      assertSafePathSegment(cfg.projectId, "projectId");
+      assertSafePathSegment(cfg.sessionId, "sessionId");
+
       const repoPath = expandPath(cfg.project.path);
       const projectWorktreeDir = join(worktreeBaseDir, cfg.projectId);
       const worktreePath = join(projectWorktreeDir, cfg.sessionId);
@@ -121,6 +133,7 @@ export function create(config?: Record<string, unknown>): Workspace {
     },
 
     async list(projectId: string): Promise<WorkspaceInfo[]> {
+      assertSafePathSegment(projectId, "projectId");
       const projectWorktreeDir = join(worktreeBaseDir, projectId);
       if (!existsSync(projectWorktreeDir)) return [];
 
@@ -182,8 +195,22 @@ export function create(config?: Record<string, unknown>): Workspace {
       // Symlink shared resources
       if (project.symlinks) {
         for (const symlinkPath of project.symlinks) {
+          // Guard against absolute paths and directory traversal
+          if (symlinkPath.startsWith("/") || symlinkPath.includes("..")) {
+            throw new Error(
+              `Invalid symlink path "${symlinkPath}": must be a relative path without ".." segments`,
+            );
+          }
+
           const sourcePath = join(repoPath, symlinkPath);
-          const targetPath = join(info.path, symlinkPath);
+          const targetPath = resolve(info.path, symlinkPath);
+
+          // Verify resolved target is still within the workspace
+          if (!targetPath.startsWith(info.path + "/") && targetPath !== info.path) {
+            throw new Error(
+              `Symlink target "${symlinkPath}" resolves outside workspace: ${targetPath}`,
+            );
+          }
 
           if (!existsSync(sourcePath)) continue;
 

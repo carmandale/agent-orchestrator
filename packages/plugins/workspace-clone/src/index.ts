@@ -26,6 +26,15 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout.trimEnd();
 }
 
+/** Only allow safe characters in path segments to prevent directory traversal */
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+
+function assertSafePathSegment(value: string, label: string): void {
+  if (!SAFE_PATH_SEGMENT.test(value)) {
+    throw new Error(`Invalid ${label} "${value}": must match ${SAFE_PATH_SEGMENT}`);
+  }
+}
+
 /** Expand ~ to home directory */
 function expandPath(p: string): string {
   if (p.startsWith("~/")) {
@@ -43,6 +52,9 @@ export function create(config?: Record<string, unknown>): Workspace {
     name: "clone",
 
     async create(cfg: WorkspaceCreateConfig): Promise<WorkspaceInfo> {
+      assertSafePathSegment(cfg.projectId, "projectId");
+      assertSafePathSegment(cfg.sessionId, "sessionId");
+
       const repoPath = expandPath(cfg.project.path);
       const projectCloneDir = join(cloneBaseDir, cfg.projectId);
       const clonePath = join(projectCloneDir, cfg.sessionId);
@@ -92,6 +104,7 @@ export function create(config?: Record<string, unknown>): Workspace {
     },
 
     async list(projectId: string): Promise<WorkspaceInfo[]> {
+      assertSafePathSegment(projectId, "projectId");
       const projectCloneDir = join(cloneBaseDir, projectId);
       if (!existsSync(projectCloneDir)) return [];
 

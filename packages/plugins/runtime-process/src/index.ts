@@ -42,6 +42,8 @@ export function create(): Runtime {
     async create(config: RuntimeCreateConfig): Promise<RuntimeHandle> {
       assertValidSessionId(config.sessionId);
 
+      // NOTE: shell:true is intentional — launchCommand comes from trusted YAML config
+      // and may contain pipes, redirects, or other shell syntax.
       const child = spawn(config.launchCommand, {
         cwd: config.workspacePath,
         env: { ...process.env, ...config.environment },
@@ -51,14 +53,20 @@ export function create(): Runtime {
 
       const handleId = config.sessionId;
 
-      // Wait briefly to catch synchronous spawn errors (bad command, etc.)
+      // Wait for spawn success or error — avoids the race where setImmediate
+      // resolves before an async error event fires, which would return a dangling handle.
       await new Promise<void>((resolve, reject) => {
-        child.once("error", (err: Error) => {
+        const onError = (err: Error) => {
+          child.removeListener("spawn", onSpawn);
           processes.delete(handleId);
           reject(new Error(`Failed to spawn process for session ${handleId}: ${err.message}`));
-        });
-        // If no error fires synchronously, the spawn succeeded
-        setImmediate(resolve);
+        };
+        const onSpawn = () => {
+          child.removeListener("error", onError);
+          resolve();
+        };
+        child.once("error", onError);
+        child.once("spawn", onSpawn);
       });
 
       const entry: ProcessEntry = {

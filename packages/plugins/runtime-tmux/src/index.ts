@@ -98,7 +98,7 @@ export function create(): Runtime {
       // Use randomUUID to avoid temp file collisions on concurrent sends
       if (message.includes("\n") || message.length > 200) {
         const tmpPath = join(tmpdir(), `ao-send-${randomUUID()}.txt`);
-        writeFileSync(tmpPath, message, "utf-8");
+        writeFileSync(tmpPath, message, { encoding: "utf-8", mode: 0o600 });
         try {
           await tmux("load-buffer", tmpPath);
           await tmux("paste-buffer", "-t", handle.id);
