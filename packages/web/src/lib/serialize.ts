@@ -108,13 +108,21 @@ export async function enrichSessionPR(
 
   const [summaryR, checksR, ciR, reviewR, mergeR, commentsR] = results;
 
-  // Check if all requests failed (likely rate limit)
-  const allFailed = results.every((r) => r.status === "rejected");
-  if (allFailed) {
+  // Check if most critical requests failed (likely rate limit)
+  // Note: Some methods (like getCISummary) return fallback values instead of rejecting,
+  // so we can't rely on "all rejected" — check if majority failed instead
+  const failedCount = results.filter((r) => r.status === "rejected").length;
+  const mostFailed = failedCount >= results.length / 2;
+
+  if (mostFailed) {
     // Don't update PR data — leave default "Data not loaded" blocker
     // Log for debugging (in production, you'd use a logger)
-    const firstError = (results[0] as PromiseRejectedResult).reason;
-    console.error(`[enrichSessionPR] All API calls failed for PR #${pr.number}:`, firstError);
+    const rejectedResults = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+    const firstError = rejectedResults[0]?.reason;
+    console.error(
+      `[enrichSessionPR] ${failedCount}/${results.length} API calls failed for PR #${pr.number}:`,
+      firstError,
+    );
     dashboard.pr.mergeability.blockers = ["API rate limited or unavailable"];
     return;
   }
@@ -164,7 +172,7 @@ export async function enrichSessionPR(
   }
 
   // Cache the result if we got at least some data
-  if (!allFailed) {
+  if (!mostFailed) {
     const cacheData: PREnrichmentData = {
       state: dashboard.pr.state,
       title: dashboard.pr.title,

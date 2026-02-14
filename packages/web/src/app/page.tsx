@@ -48,6 +48,16 @@ export default async function Home() {
         const cacheKey = prCacheKey(core.pr.owner, core.pr.repo, core.pr.number);
         const cached = prCache.get(cacheKey);
         if (cached && (cached.state === "merged" || cached.state === "closed")) {
+          // Apply cached terminal state to session before skipping enrichment
+          if (sessions[i].pr) {
+            sessions[i].pr.state = cached.state;
+            sessions[i].pr.ciStatus = cached.ciStatus as "none" | "pending" | "passing" | "failing";
+            sessions[i].pr.reviewDecision = cached.reviewDecision as "none" | "pending" | "approved" | "changes_requested";
+            sessions[i].pr.ciChecks = cached.ciChecks;
+            sessions[i].pr.mergeability = cached.mergeability;
+            sessions[i].pr.pendingComments = cached.pendingComments;
+            sessions[i].pr.automatedComments = cached.automatedComments;
+          }
           return Promise.resolve();
         }
       }
