@@ -1,52 +1,70 @@
-import { notFound } from "next/navigation";
-import { getServices, getTracker, getSCM } from "@/lib/services";
-import { sessionToDashboard, enrichSessionIssue, enrichSessionPR } from "@/lib/serialize";
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { SessionDetail } from "@/components/SessionDetail";
+import type { DashboardSession } from "@/lib/types";
 
-interface Props {
-  params: Promise<{ id: string }>;
-}
+export default function SessionPage() {
+  const params = useParams();
+  const router = useRouter();
+  const id = params.id as string;
 
-export default async function SessionPage({ params }: Props) {
-  const { id } = await params;
+  const [session, setSession] = useState<DashboardSession | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const { config, registry, sessionManager } = await getServices().catch(() => {
-    notFound();
-    // notFound() throws, so this never runs, but TS needs the return type
-    return null as never;
-  });
+  // Fetch session data
+  const fetchSession = async () => {
+    try {
+      const res = await fetch(`/api/sessions/${id}`);
+      if (res.status === 404) {
+        setError("Session not found");
+        setLoading(false);
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json() as DashboardSession;
+      setSession(data);
+      setError(null);
+    } catch (err) {
+      console.error("Failed to fetch session:", err);
+      setError("Failed to load session");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const coreSession = await sessionManager.get(id);
-  if (!coreSession) {
-    notFound();
-  }
+  // Initial fetch
+  useEffect(() => {
+    fetchSession();
+  }, [id]);
 
-  const dashboardSession = sessionToDashboard(coreSession);
+  // Poll for updates every 5 seconds
+  useEffect(() => {
+    const interval = setInterval(fetchSession, 5000);
+    return () => clearInterval(interval);
+  }, [id]);
 
-  // Get project config for enrichments
-  let project = config.projects[coreSession.projectId];
-  if (!project) {
-    const entry = Object.entries(config.projects).find(([, p]) =>
-      coreSession.id.startsWith(p.sessionPrefix),
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-sm text-[var(--color-text-muted)]">Loading session...</div>
+      </div>
     );
-    if (entry) project = entry[1];
   }
 
-  // Enrich issue label using tracker plugin
-  if (dashboardSession.issueUrl && project) {
-    const tracker = getTracker(registry, project);
-    if (tracker) {
-      enrichSessionIssue(dashboardSession, tracker, project);
-    }
+  if (error || !session) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-sm text-[var(--color-accent-red)]">
+          {error || "Session not found"}
+        </div>
+      </div>
+    );
   }
 
-  // Enrich PR with live data from SCM
-  if (coreSession.pr && project) {
-    const scm = getSCM(registry, project);
-    if (scm) {
-      await enrichSessionPR(dashboardSession, scm, coreSession.pr);
-    }
-  }
-
-  return <SessionDetail session={dashboardSession} />;
+  return <SessionDetail session={session} />;
 }
