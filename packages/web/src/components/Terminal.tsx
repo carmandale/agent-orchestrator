@@ -21,24 +21,32 @@ export function Terminal({ sessionId }: TerminalProps) {
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
+  console.log(`[Terminal] Component mounted for session: ${sessionId}`);
+
   // Initialize xterm.js
   useEffect(() => {
-    if (!terminalRef.current) return;
+    console.log("[Terminal] Initialize effect running");
+    if (!terminalRef.current) {
+      console.log("[Terminal] terminalRef not ready yet");
+      return;
+    }
+    console.log("[Terminal] Creating XTerm instance...");
 
-    // Create terminal instance - fully interactive
+    // Create terminal instance
     const term = new XTerm({
-      cursorBlink: true,
-      cursorStyle: "block",
+      cursorBlink: false,
+      cursorStyle: "underline",
       theme: {
         background: "#000000",
         foreground: "#d0d0d0",
-        cursor: "#d0d0d0",
+        cursor: "transparent", // Hide cursor - tmux output has its own
       },
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       fontSize: 12,
       lineHeight: 1.4,
       scrollback: 10000,
       convertEol: true,
+      allowProposedApi: true,
     });
 
     const fitAddon = new FitAddon();
@@ -89,10 +97,14 @@ export function Terminal({ sessionId }: TerminalProps) {
   // Connect to WebSocket for interactive terminal
   useEffect(() => {
     const term = xtermRef.current;
-    if (!term) return;
+    if (!term) {
+      console.log("[Terminal] XTerm not initialized, skipping WebSocket");
+      return;
+    }
 
     // Connect to WebSocket server
     const wsUrl = `ws://localhost:${process.env.NEXT_PUBLIC_WS_PORT ?? "3001"}?session=${sessionId}`;
+    console.log(`[Terminal] Connecting to WebSocket: ${wsUrl}`);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

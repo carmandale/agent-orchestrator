@@ -20,11 +20,17 @@ const sessions = new Map<string, TerminalSession>();
 const server = createServer();
 const wss = new WebSocketServer({ server });
 
+console.log("[WebSocket] Server ready, waiting for connections...");
+
 wss.on("connection", (ws, req) => {
+  console.log(`[WebSocket] New connection attempt from ${req.socket.remoteAddress}`);
   const url = new URL(req.url ?? "/", "http://localhost");
   const sessionId = url.searchParams.get("session");
 
+  console.log(`[WebSocket] Requested session: ${sessionId}`);
+
   if (!sessionId) {
+    console.error("[WebSocket] No session parameter provided");
     ws.close(1008, "Missing session parameter");
     return;
   }
@@ -40,35 +46,50 @@ wss.on("connection", (ws, req) => {
 
   sessions.set(sessionId, session);
 
-  // Start streaming tmux output using tmux pipe-pane
-  // This continuously pipes output to a command
-  const captureProcess = spawn("tmux", [
-    "pipe-pane",
-    "-t",
-    sessionId,
-    "-O",
-    "cat",
-  ]);
+  let lastContent = "";
+  let pollInterval: NodeJS.Timeout;
 
-  session.captureProcess = captureProcess;
+  // Poll tmux capture-pane every 100ms for real-time updates
+  const pollOutput = () => {
+    const captureProcess = spawn("tmux", [
+      "capture-pane",
+      "-t",
+      sessionId,
+      "-p",
+      "-e", // Include escape sequences
+      "-J", // Join wrapped lines
+      "-S",
+      "-200", // More scrollback for context
+    ]);
 
-  // Stream output to WebSocket
-  captureProcess.stdout?.on("data", (data: Buffer) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data.toString("utf-8"));
-    }
-  });
+    let output = "";
+    captureProcess.stdout?.on("data", (data: Buffer) => {
+      output += data.toString("utf-8");
+    });
 
-  captureProcess.stderr?.on("data", (data: Buffer) => {
-    console.error(`[WebSocket] tmux pipe-pane error:`, data.toString());
-  });
+    captureProcess.on("close", () => {
+      if (output && output !== lastContent && ws.readyState === WebSocket.OPEN) {
+        lastContent = output;
+        ws.send(output);
+      }
+    });
 
-  captureProcess.on("exit", (code) => {
-    console.log(`[WebSocket] pipe-pane exited for ${sessionId} with code ${code}`);
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.close(1000, "Session ended");
-    }
-  });
+    captureProcess.on("error", (err) => {
+      console.error(`[WebSocket] Failed to capture pane for ${sessionId}:`, err.message);
+      clearInterval(pollInterval);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close(1011, "Session capture failed");
+      }
+    });
+  };
+
+  // Send initial snapshot
+  pollOutput();
+
+  // Start polling - 100ms for lower latency
+  pollInterval = setInterval(pollOutput, 100);
+
+  session.captureProcess = null; // Not using a persistent process anymore
 
   // Handle input from client
   ws.on("message", (message) => {
@@ -119,23 +140,9 @@ wss.on("connection", (ws, req) => {
   // Handle disconnect
   ws.on("close", () => {
     console.log(`[WebSocket] Client disconnected from session: ${sessionId}`);
-
-    // Stop pipe-pane
-    if (session.captureProcess) {
-      spawn("tmux", ["pipe-pane", "-t", sessionId]);
-      session.captureProcess.kill();
-    }
-
+    clearInterval(pollInterval);
     sessions.delete(sessionId);
   });
-
-  // Send initial output (capture recent history)
-  spawn("tmux", ["capture-pane", "-t", sessionId, "-p", "-S", "-100"])
-    .stdout?.on("data", (data: Buffer) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data.toString("utf-8"));
-      }
-    });
 });
 
 const PORT = parseInt(process.env.WS_PORT ?? "3001", 10);
