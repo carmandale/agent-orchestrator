@@ -249,10 +249,12 @@ describe("scm-github plugin", () => {
         { name: "neutral", state: "COMPLETED", conclusion: "NEUTRAL", detailsUrl: "", startedAt: "", completedAt: "" },
         { name: "timeout", state: "COMPLETED", conclusion: "TIMED_OUT", detailsUrl: "", startedAt: "", completedAt: "" },
         { name: "queued", state: "QUEUED", conclusion: "", detailsUrl: "", startedAt: "", completedAt: "" },
+        { name: "cancelled", state: "COMPLETED", conclusion: "CANCELLED", detailsUrl: "", startedAt: "", completedAt: "" },
+        { name: "action_req", state: "COMPLETED", conclusion: "ACTION_REQUIRED", detailsUrl: "", startedAt: "", completedAt: "" },
       ]);
 
       const checks = await scm.getCIChecks(pr);
-      expect(checks).toHaveLength(8);
+      expect(checks).toHaveLength(10);
       expect(checks[0].status).toBe("passed");
       expect(checks[0].url).toBe("https://ci/1");
       expect(checks[1].status).toBe("failed");
@@ -262,6 +264,8 @@ describe("scm-github plugin", () => {
       expect(checks[5].status).toBe("skipped");
       expect(checks[6].status).toBe("failed");
       expect(checks[7].status).toBe("pending");
+      expect(checks[8].status).toBe("failed");   // CANCELLED
+      expect(checks[9].status).toBe("failed");   // ACTION_REQUIRED
     });
 
     it("throws on error (fail-closed)", async () => {

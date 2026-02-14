@@ -205,12 +205,18 @@ function createGitHubSCM(): SCM {
             status = "running";
           } else if (conclusion === "SUCCESS") {
             status = "passed";
-          } else if (conclusion === "FAILURE" || conclusion === "TIMED_OUT") {
+          } else if (
+            conclusion === "FAILURE" ||
+            conclusion === "TIMED_OUT" ||
+            conclusion === "CANCELLED" ||
+            conclusion === "ACTION_REQUIRED"
+          ) {
             status = "failed";
           } else if (conclusion === "SKIPPED" || conclusion === "NEUTRAL") {
             status = "skipped";
           } else {
-            status = "pending";
+            // Unknown conclusion on a completed check — fail closed
+            status = "failed";
           }
 
           return {
