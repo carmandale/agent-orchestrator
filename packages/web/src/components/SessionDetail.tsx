@@ -7,6 +7,7 @@ import {
   type DashboardCICheck,
   getAttentionLevel,
 } from "@/lib/types";
+import { checkStatusIcon, ciCheckSortOrder } from "./CIBadge";
 import { Terminal } from "./Terminal";
 
 interface SessionDetailProps {
@@ -71,16 +72,6 @@ function buildGitHubBranchUrl(pr: DashboardPR): string {
 function buildGitHubRepoUrl(pr: DashboardPR): string {
   return `https://github.com/${pr.owner}/${pr.repo}`;
 }
-
-// ── CI check icon/color mapping ──────────────────────────────────────
-
-const checkStatusIcon: Record<DashboardCICheck["status"], { icon: string; color: string }> = {
-  passed: { icon: "\u2713", color: "var(--color-accent-green)" },
-  failed: { icon: "\u2717", color: "var(--color-accent-red)" },
-  running: { icon: "\u25CF", color: "var(--color-accent-yellow)" },
-  pending: { icon: "\u25CB", color: "var(--color-text-muted)" },
-  skipped: { icon: "\u25CB", color: "var(--color-text-muted)" },
-};
 
 // ── Main Component ───────────────────────────────────────────────────
 
@@ -460,16 +451,7 @@ function InlineCIChecks({
   checks: DashboardCICheck[];
   expandFailures: boolean;
 }) {
-  const sorted = [...checks].sort((a, b) => {
-    const order: Record<DashboardCICheck["status"], number> = {
-      failed: 0,
-      running: 1,
-      pending: 2,
-      passed: 3,
-      skipped: 4,
-    };
-    return order[a.status] - order[b.status];
-  });
+  const sorted = [...checks].sort((a, b) => ciCheckSortOrder[a.status] - ciCheckSortOrder[b.status]);
 
   return (
     <div className={expandFailures ? "space-y-1" : "flex flex-wrap items-center gap-x-3 gap-y-1"}>

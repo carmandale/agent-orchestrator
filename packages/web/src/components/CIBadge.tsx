@@ -58,7 +58,7 @@ interface CICheckListProps {
   checks: DashboardCICheck[];
 }
 
-const checkStatusIcon: Record<DashboardCICheck["status"], { icon: string; color: string }> = {
+export const checkStatusIcon: Record<DashboardCICheck["status"], { icon: string; color: string }> = {
   passed: { icon: "\u2713", color: "var(--color-accent-green)" },
   failed: { icon: "\u2717", color: "var(--color-accent-red)" },
   running: { icon: "\u25CF", color: "var(--color-accent-yellow)" },
@@ -66,17 +66,17 @@ const checkStatusIcon: Record<DashboardCICheck["status"], { icon: string; color:
   skipped: { icon: "\u25CB", color: "var(--color-text-muted)" },
 };
 
+/** Sort order for CI checks: failures first, then running, pending, passed, skipped. */
+export const ciCheckSortOrder: Record<DashboardCICheck["status"], number> = {
+  failed: 0,
+  running: 1,
+  pending: 2,
+  passed: 3,
+  skipped: 4,
+};
+
 export function CICheckList({ checks }: CICheckListProps) {
-  const sorted = [...checks].sort((a, b) => {
-    const order: Record<DashboardCICheck["status"], number> = {
-      failed: 0,
-      running: 1,
-      pending: 2,
-      passed: 3,
-      skipped: 4,
-    };
-    return order[a.status] - order[b.status];
-  });
+  const sorted = [...checks].sort((a, b) => ciCheckSortOrder[a.status] - ciCheckSortOrder[b.status]);
 
   return (
     <div className="space-y-1">
