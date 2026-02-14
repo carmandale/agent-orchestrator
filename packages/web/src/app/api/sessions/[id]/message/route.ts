@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getServices } from "@/lib/services";
-import { stripControlChars } from "@/lib/validation";
+import { stripControlChars, validateIdentifier, validateString } from "@/lib/validation";
 import type { Runtime } from "@agent-orchestrator/core";
+
+const MAX_MESSAGE_LENGTH = 10_000;
 
 export async function POST(
   request: NextRequest,
@@ -9,18 +11,46 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const { message: rawMessage } = await request.json() as { message: string };
 
-    if (!rawMessage) {
-      return NextResponse.json({ error: "Missing message" }, { status: 400 });
+    // Validate session ID to prevent injection
+    const idErr = validateIdentifier(id, "id");
+    if (idErr) {
+      return NextResponse.json({ error: idErr }, { status: 400 });
+    }
+
+    // Parse JSON with explicit error handling
+    let body: Record<string, unknown> | null;
+    try {
+      body = await request.json() as Record<string, unknown>;
+    } catch (err) {
+      return NextResponse.json(
+        { error: "Invalid JSON in request body" },
+        { status: 400 },
+      );
+    }
+
+    // Validate message is a non-empty string within length limit
+    const messageErr = validateString(body?.message, "message", MAX_MESSAGE_LENGTH);
+    if (messageErr) {
+      return NextResponse.json({ error: messageErr }, { status: 400 });
+    }
+
+    // Type guard: ensure message is actually a string
+    const rawMessage = body?.message;
+    if (typeof rawMessage !== "string") {
+      return NextResponse.json(
+        { error: "message must be a string" },
+        { status: 400 },
+      );
     }
 
     // Strip control characters to prevent injection when passed to shell-based runtimes
     const message = stripControlChars(rawMessage);
 
+    // Re-validate after stripping — a control-char-only message becomes empty
     if (message.trim().length === 0) {
       return NextResponse.json(
-        { error: "Message must not be empty after sanitization" },
+        { error: "message must not be empty after sanitization" },
         { status: 400 },
       );
     }

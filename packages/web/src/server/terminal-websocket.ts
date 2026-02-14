@@ -19,17 +19,37 @@ interface TtydInstance {
 
 const instances = new Map<string, TtydInstance>();
 let nextPort = 7800; // Start ttyd instances from port 7800
+const MAX_PORT = 7900; // Prevent unbounded port allocation
 
 /**
  * Check if ttyd is ready to accept connections by making a test request.
  * Returns a promise that resolves when ttyd is ready or rejects after timeout.
+ * Properly cancels pending timeouts and requests to prevent memory leaks.
  */
 function waitForTtyd(port: number, sessionId: string, timeoutMs = 3000): Promise<void> {
   const startTime = Date.now();
+  let timeoutId: NodeJS.Timeout | null = null;
+  let pendingReq: ReturnType<typeof request> | null = null;
+  let settled = false;
 
   return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      settled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (pendingReq) {
+        pendingReq.destroy();
+        pendingReq = null;
+      }
+    };
+
     const checkReady = () => {
+      if (settled) return;
+
       if (Date.now() - startTime > timeoutMs) {
+        cleanup();
         reject(new Error(`ttyd did not become ready within ${timeoutMs}ms`));
         return;
       }
@@ -42,18 +62,25 @@ function waitForTtyd(port: number, sessionId: string, timeoutMs = 3000): Promise
         timeout: 500,
       }, (_res) => {
         // Any response (even 404) means ttyd is listening
+        cleanup();
         resolve();
       });
 
+      pendingReq = req;
+
       req.on("timeout", () => {
-        // Request timed out - abort and retry
+        if (settled) return;
         req.destroy();
-        setTimeout(checkReady, 100);
+        pendingReq = null;
+        // Schedule retry but track the timeout ID
+        timeoutId = setTimeout(checkReady, 100);
       });
 
       req.on("error", () => {
+        if (settled) return;
+        pendingReq = null;
         // Connection refused or other error - ttyd not ready yet, retry
-        setTimeout(checkReady, 100);
+        timeoutId = setTimeout(checkReady, 100);
       });
 
       req.end();
@@ -67,14 +94,25 @@ function getOrSpawnTtyd(sessionId: string): TtydInstance {
   const existing = instances.get(sessionId);
   if (existing) return existing;
 
+  // Prevent port exhaustion
+  if (nextPort >= MAX_PORT) {
+    throw new Error(`Port exhaustion: reached maximum of ${MAX_PORT - 7800} terminal instances`);
+  }
+
   const port = nextPort++;
   console.log(`[Terminal] Spawning ttyd for ${sessionId} on port ${port}`);
 
   // Enable mouse mode so scroll works as scrollback, not input cycling
-  spawn("tmux", ["set-option", "-t", sessionId, "mouse", "on"]);
+  const mouseProc = spawn("tmux", ["set-option", "-t", sessionId, "mouse", "on"]);
+  mouseProc.on("error", (err) => {
+    console.error(`[Terminal] Failed to set mouse mode for ${sessionId}:`, err.message);
+  });
 
   // Hide the green status bar for cleaner appearance
-  spawn("tmux", ["set-option", "-t", sessionId, "status", "off"]);
+  const statusProc = spawn("tmux", ["set-option", "-t", sessionId, "status", "off"]);
+  statusProc.on("error", (err) => {
+    console.error(`[Terminal] Failed to hide status bar for ${sessionId}:`, err.message);
+  });
 
   const proc = spawn("ttyd", [
     "--writable",
@@ -93,14 +131,22 @@ function getOrSpawnTtyd(sessionId: string): TtydInstance {
     console.log(`[Terminal] ttyd ${sessionId}: ${data.toString().trim()}`);
   });
 
-  proc.on("exit", (code) => {
+  // Use once() for cleanup handlers to prevent race condition when both exit and error fire
+  proc.once("exit", (code) => {
     console.log(`[Terminal] ttyd ${sessionId} exited with code ${code}`);
     instances.delete(sessionId);
   });
 
-  proc.on("error", (err) => {
+  proc.once("error", (err) => {
     console.error(`[Terminal] ttyd ${sessionId} error:`, err.message);
+    // Clean up instance on spawn error to prevent leak
     instances.delete(sessionId);
+    // Kill any running process
+    try {
+      proc.kill();
+    } catch {
+      // Ignore kill errors if process already dead
+    }
   });
 
   const instance: TtydInstance = { sessionId, port, process: proc };
@@ -188,10 +234,12 @@ function shutdown(signal: string) {
     process.exit(0);
   });
   // Force exit after 5s if graceful shutdown hangs
-  setTimeout(() => {
+  // Use unref() so this timer doesn't prevent process exit if server closes quickly
+  const forceExitTimer = setTimeout(() => {
     console.error("[Terminal] Forced shutdown after timeout");
     process.exit(1);
   }, 5000);
+  forceExitTimer.unref();
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));

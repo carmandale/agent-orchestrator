@@ -22,7 +22,8 @@ export function Terminal({ sessionId }: TerminalProps) {
     // Use current hostname instead of hardcoded localhost
     const protocol = window.location.protocol;
     const hostname = window.location.hostname;
-    fetch(`${protocol}//${hostname}:${port}/terminal?session=${sessionId}`)
+    // URL-encode sessionId to prevent special characters from breaking the URL
+    fetch(`${protocol}//${hostname}:${port}/terminal?session=${encodeURIComponent(sessionId)}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json() as Promise<{ url: string }>;

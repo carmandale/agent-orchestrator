@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { SessionDetail } from "@/components/SessionDetail";
 import type { DashboardSession } from "@/lib/types";
@@ -13,10 +13,10 @@ export default function SessionPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch session data
-  const fetchSession = async () => {
+  // Fetch session data (memoized to avoid recreating on every render)
+  const fetchSession = useCallback(async () => {
     try {
-      const res = await fetch(`/api/sessions/${id}`);
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`);
       if (res.status === 404) {
         setError("Session not found");
         setLoading(false);
@@ -34,18 +34,18 @@ export default function SessionPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
   // Initial fetch
   useEffect(() => {
     fetchSession();
-  }, [id]);
+  }, [fetchSession]);
 
   // Poll for updates every 5 seconds
   useEffect(() => {
     const interval = setInterval(fetchSession, 5000);
     return () => clearInterval(interval);
-  }, [id]);
+  }, [fetchSession]);
 
   if (loading) {
     return (
