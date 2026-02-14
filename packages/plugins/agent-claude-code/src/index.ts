@@ -344,13 +344,10 @@ function classifyTerminalOutput(terminalOutput: string): ActivityState {
   if (/\(Y\)es.*\(N\)o/i.test(tail)) return "waiting_input";
   if (/bypass.*permissions/i.test(tail)) return "waiting_input";
 
-  // Active indicators — Claude is processing
-  if (terminalOutput.includes("esc to interrupt")) return "active";
-  if (/Thinking|Reading|Writing|Searching/i.test(terminalOutput)) return "active";
-
-  // Queued message indicator
-  if (terminalOutput.includes("Press up to edit queued messages")) return "active";
-
+  // Everything else is "active" — the agent is processing, waiting for
+  // output, or showing content. Specific patterns (e.g. "esc to interrupt",
+  // "Thinking", "Reading") all map to "active" so no need to check them
+  // individually.
   return "active";
 }
 

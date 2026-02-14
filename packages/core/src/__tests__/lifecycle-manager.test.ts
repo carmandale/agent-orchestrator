@@ -207,8 +207,9 @@ describe("check (single session)", () => {
     expect(lm.getStates().get("app-1")).toBe("killed");
   });
 
-  it("detects stuck state from agent", async () => {
-    vi.mocked(mockAgent.detectActivity).mockReturnValue("blocked");
+  it("detects killed state when agent process exits (idle terminal + dead process)", async () => {
+    vi.mocked(mockAgent.detectActivity).mockReturnValue("idle");
+    vi.mocked(mockAgent.isProcessRunning).mockResolvedValue(false);
 
     const session = makeSession({ status: "working" });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
@@ -228,7 +229,32 @@ describe("check (single session)", () => {
 
     await lm.check("app-1");
 
-    expect(lm.getStates().get("app-1")).toBe("stuck");
+    expect(lm.getStates().get("app-1")).toBe("killed");
+  });
+
+  it("stays working when agent is idle but process is still running", async () => {
+    vi.mocked(mockAgent.detectActivity).mockReturnValue("idle");
+    vi.mocked(mockAgent.isProcessRunning).mockResolvedValue(true);
+
+    const session = makeSession({ status: "working" });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(dataDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config,
+      registry: mockRegistry,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("working");
   });
 
   it("detects needs_input from agent", async () => {

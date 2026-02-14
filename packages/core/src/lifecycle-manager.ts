@@ -190,7 +190,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     }
 
-    // 2. Check agent activity via terminal output
+    // 2. Check agent activity via terminal output + process liveness
     if (agent && session.runtimeHandle) {
       try {
         const runtime = registry.get<Runtime>("runtime", project.runtime ?? config.defaults.runtime);
@@ -201,9 +201,15 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         // empty output means the runtime probe failed, not that the agent exited.
         if (terminalOutput) {
           const activity = agent.detectActivity(terminalOutput);
-          if (activity === "exited") return "killed";
-          if (activity === "blocked") return "stuck";
           if (activity === "waiting_input") return "needs_input";
+
+          // If the terminal looks idle, check whether the agent process is
+          // still running. An idle terminal with no agent process means the
+          // agent has exited (e.g. finished its task or crashed).
+          if (activity === "idle") {
+            const processAlive = await agent.isProcessRunning(session.runtimeHandle);
+            if (!processAlive) return "killed";
+          }
         }
       } catch {
         // On probe failure, preserve current stuck/needs_input state rather
