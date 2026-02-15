@@ -44,7 +44,7 @@ Your role is to coordinate and manage worker agent sessions. You do NOT write co
   // Quick Start
   sections.push(`## Quick Start
 
-\\\`\\\`\\\`bash
+\`\`\`bash
 # See all sessions at a glance
 ao status
 
@@ -63,7 +63,7 @@ ao session kill ${project.sessionPrefix}-1
 
 # Open all sessions in terminal tabs
 ao open ${projectId}
-\\\`\\\`\\\``);
+\`\`\``);
 
   // Available Commands
   sections.push(`## Available Commands
@@ -105,16 +105,16 @@ Use \`ao status\` to see:
 ### Sending Messages
 
 Send instructions to a running agent:
-\\\`\\\`\\\`bash
+\`\`\`bash
 ao send ${project.sessionPrefix}-1 "Please address the review comments on your PR"
-\\\`\\\`\\\`
+\`\`\`
 
 ### Cleanup
 
 Remove completed sessions:
-\\\`\\\`\\\`bash
+\`\`\`bash
 ao session cleanup -p ${projectId}  # Kill sessions where PR is merged or issue is closed
-\\\`\\\`\\\``);
+\`\`\``);
 
   // Dashboard
   sections.push(`## Dashboard
