@@ -506,6 +506,20 @@ function createGitHubSCM(): SCM {
     async getMergeability(pr: PRInfo): Promise<MergeReadiness> {
       const blockers: string[] = [];
 
+      // First, check if the PR is merged or closed
+      // GitHub returns mergeable=null for merged/closed PRs, which is not useful
+      const state = await this.getPRState(pr);
+      if (state === "merged" || state === "closed") {
+        // For merged/closed PRs, return a clean result without querying mergeable status
+        return {
+          mergeable: true,
+          ciPassing: true,
+          approved: true,
+          noConflicts: true,
+          blockers: [],
+        };
+      }
+
       // Fetch PR details with merge state
       const raw = await gh([
         "pr",

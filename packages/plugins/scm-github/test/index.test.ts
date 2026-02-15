@@ -536,7 +536,41 @@ describe("scm-github plugin", () => {
   // ---- getMergeability ---------------------------------------------------
 
   describe("getMergeability", () => {
+    it("returns clean result for merged PRs without querying mergeable status", async () => {
+      // getPRState call
+      mockGh({ state: "MERGED" });
+
+      const result = await scm.getMergeability(pr);
+      expect(result).toEqual({
+        mergeable: true,
+        ciPassing: true,
+        approved: true,
+        noConflicts: true,
+        blockers: [],
+      });
+      // Should only call gh once (for getPRState), not for mergeable/CI
+      expect(ghMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns clean result for closed PRs without querying mergeable status", async () => {
+      // getPRState call
+      mockGh({ state: "CLOSED" });
+
+      const result = await scm.getMergeability(pr);
+      expect(result).toEqual({
+        mergeable: true,
+        ciPassing: true,
+        approved: true,
+        noConflicts: true,
+        blockers: [],
+      });
+      // Should only call gh once (for getPRState), not for mergeable/CI
+      expect(ghMock).toHaveBeenCalledTimes(1);
+    });
+
     it("returns mergeable when everything is clear", async () => {
+      // getPRState call (for open PR)
+      mockGh({ state: "OPEN" });
       // PR view
       mockGh({ mergeable: "MERGEABLE", reviewDecision: "APPROVED", mergeStateStatus: "CLEAN", isDraft: false });
       // CI checks (called by getCISummary)
@@ -553,6 +587,7 @@ describe("scm-github plugin", () => {
     });
 
     it("reports CI failures as blockers", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
       mockGh({ mergeable: "MERGEABLE", reviewDecision: "APPROVED", mergeStateStatus: "UNSTABLE", isDraft: false });
       mockGh([{ name: "build", state: "FAILURE" }]);
 
@@ -564,6 +599,7 @@ describe("scm-github plugin", () => {
     });
 
     it("reports UNSTABLE merge state even when CI fetch fails", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
       mockGh({ mergeable: "MERGEABLE", reviewDecision: "APPROVED", mergeStateStatus: "UNSTABLE", isDraft: false });
       mockGhError("rate limited");
 
@@ -575,6 +611,7 @@ describe("scm-github plugin", () => {
     });
 
     it("reports changes requested as blockers", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
       mockGh({ mergeable: "MERGEABLE", reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "CLEAN", isDraft: false });
       mockGh([]); // no CI checks
 
@@ -584,6 +621,7 @@ describe("scm-github plugin", () => {
     });
 
     it("reports review required as blocker", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
       mockGh({ mergeable: "MERGEABLE", reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED", isDraft: false });
       mockGh([]);
 
@@ -592,6 +630,7 @@ describe("scm-github plugin", () => {
     });
 
     it("reports merge conflicts as blockers", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
       mockGh({ mergeable: "CONFLICTING", reviewDecision: "APPROVED", mergeStateStatus: "DIRTY", isDraft: false });
       mockGh([]);
 
@@ -601,6 +640,7 @@ describe("scm-github plugin", () => {
     });
 
     it("reports UNKNOWN mergeable as noConflicts false", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
       mockGh({ mergeable: "UNKNOWN", reviewDecision: "APPROVED", mergeStateStatus: "CLEAN", isDraft: false });
       mockGh([{ name: "build", state: "SUCCESS" }]);
 
@@ -611,6 +651,7 @@ describe("scm-github plugin", () => {
     });
 
     it("reports draft status as blocker", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
       mockGh({ mergeable: "MERGEABLE", reviewDecision: "APPROVED", mergeStateStatus: "DRAFT", isDraft: true });
       mockGh([{ name: "build", state: "SUCCESS" }]);
 
@@ -620,6 +661,7 @@ describe("scm-github plugin", () => {
     });
 
     it("reports multiple blockers simultaneously", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
       mockGh({ mergeable: "CONFLICTING", reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "DIRTY", isDraft: true });
       mockGh([{ name: "build", state: "FAILURE" }]);
 
