@@ -572,13 +572,25 @@ function createClaudeCodeAgent(): Agent {
     },
 
     async getActivityState(session: Session): Promise<ActivityState> {
-      if (!session.workspacePath) return "exited";
+      // Check if process is running first
+      if (!session.runtimeHandle) return "exited";
+      const running = await this.isProcessRunning(session.runtimeHandle);
+      if (!running) return "exited";
+
+      // Process is running - check JSONL session file for activity
+      if (!session.workspacePath) {
+        // No workspace path but process is running - assume active
+        return "active";
+      }
 
       const projectPath = toClaudeProjectPath(session.workspacePath);
       const projectDir = join(homedir(), ".claude", "projects", projectPath);
 
       const sessionFile = await findLatestSessionFile(projectDir);
-      if (!sessionFile) return "exited";
+      if (!sessionFile) {
+        // No session file found yet, but process is running - assume active
+        return "active";
+      }
 
       const entry = await readLastJsonlEntry(sessionFile);
       if (!entry) return "idle";

@@ -10,11 +10,14 @@ import {
 } from "@composio/ao-core";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const execFileAsync = promisify(execFile);
+
+// Read only the last 4KB to find the last JSONL entry (avoid loading entire file)
+const TAIL_READ_BYTES = 4096;
 
 // =============================================================================
 // Codex Session File Helpers
@@ -71,25 +74,49 @@ async function findLatestRolloutFile(sessionId: string): Promise<string | null> 
 
 /**
  * Read the last entry from a JSONL file and return type + mtime.
+ * Only reads the last 4KB to avoid loading entire file into memory.
  */
 async function readLastJsonlEntry(
   filePath: string,
 ): Promise<{ lastType: string; modifiedAt: Date } | null> {
+  let fh;
   try {
-    const content = await readFile(filePath, "utf-8");
-    const lines = content.trim().split("\n").filter(Boolean);
-    if (lines.length === 0) return null;
+    fh = await open(filePath, "r");
+    const fileStat = await fh.stat();
+    const size = fileStat.size;
+    if (size === 0) return null;
 
-    const lastLine = lines[lines.length - 1];
-    const entry = JSON.parse(lastLine) as { type?: string };
-    const stats = await stat(filePath);
+    // Read only the last TAIL_READ_BYTES (4KB) from the file
+    const readSize = Math.min(TAIL_READ_BYTES, size);
+    const buffer = Buffer.alloc(readSize);
+    const { bytesRead } = await fh.read(buffer, 0, readSize, size - readSize);
 
-    return {
-      lastType: entry.type ?? "unknown",
-      modifiedAt: stats.mtime,
-    };
+    const chunk = buffer.toString("utf-8", 0, bytesRead);
+    // Walk backwards through lines to find the last valid JSON object with a type
+    const lines = chunk.split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line) continue;
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          const obj = parsed as Record<string, unknown>;
+          if (typeof obj.type === "string") {
+            return { lastType: obj.type, modifiedAt: fileStat.mtime };
+          }
+        }
+      } catch {
+        // Skip malformed lines (possibly truncated first line in our chunk)
+      }
+    }
+
+    return { lastType: "unknown", modifiedAt: fileStat.mtime };
   } catch {
     return null;
+  } finally {
+    await fh?.close();
   }
 }
 
