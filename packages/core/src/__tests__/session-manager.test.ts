@@ -280,21 +280,16 @@ describe("list", () => {
     expect(sessions[0].activity).toBe("exited");
   });
 
-  it("detects activity from terminal output", async () => {
-    const runtimeWithOutput: Runtime = {
-      ...mockRuntime,
-      isAlive: vi.fn().mockResolvedValue(true),
-      getOutput: vi.fn().mockResolvedValue("Thinking about the problem...\n"),
-    };
-    const agentWithDetection: Agent = {
+  it("detects activity using agent-native mechanism", async () => {
+    const agentWithState: Agent = {
       ...mockAgent,
-      detectActivity: vi.fn().mockReturnValue("active"),
+      getActivityState: vi.fn().mockResolvedValue("active"),
     };
-    const registryWithDetection: PluginRegistry = {
+    const registryWithState: PluginRegistry = {
       ...mockRegistry,
       get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return runtimeWithOutput;
-        if (slot === "agent") return agentWithDetection;
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return agentWithState;
         return null;
       }),
     };
@@ -309,34 +304,26 @@ describe("list", () => {
 
     const sm = createSessionManager({
       config,
-      registry: registryWithDetection,
+      registry: registryWithState,
     });
     const sessions = await sm.list();
 
-    // Verify getOutput was called with handle and line count
-    expect(runtimeWithOutput.getOutput).toHaveBeenCalledWith(
-      makeHandle("rt-1"),
-      30,
-    );
-    // Verify detectActivity was called with the output
-    expect(agentWithDetection.detectActivity).toHaveBeenCalledWith(
-      "Thinking about the problem...\n",
-    );
+    // Verify getActivityState was called
+    expect(agentWithState.getActivityState).toHaveBeenCalled();
     // Verify activity state was set
     expect(sessions[0].activity).toBe("active");
   });
 
-  it("falls back to idle on getOutput error", async () => {
-    const runtimeWithError: Runtime = {
-      ...mockRuntime,
-      isAlive: vi.fn().mockResolvedValue(true),
-      getOutput: vi.fn().mockRejectedValue(new Error("tmux error")),
+  it("falls back to idle on getActivityState error", async () => {
+    const agentWithError: Agent = {
+      ...mockAgent,
+      getActivityState: vi.fn().mockRejectedValue(new Error("detection failed")),
     };
     const registryWithError: PluginRegistry = {
       ...mockRegistry,
       get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return runtimeWithError;
-        if (slot === "agent") return mockAgent;
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return agentWithError;
         return null;
       }),
     };
@@ -352,7 +339,7 @@ describe("list", () => {
     const sm = createSessionManager({ config, registry: registryWithError });
     const sessions = await sm.list();
 
-    // Should fall back to idle when getOutput fails
+    // Should fall back to idle when getActivityState fails
     expect(sessions[0].activity).toBe("idle");
   });
 });
@@ -377,21 +364,16 @@ describe("get", () => {
     expect(session!.pr!.url).toBe("https://github.com/org/repo/pull/42");
   });
 
-  it("detects activity from terminal output", async () => {
-    const runtimeWithOutput: Runtime = {
-      ...mockRuntime,
-      isAlive: vi.fn().mockResolvedValue(true),
-      getOutput: vi.fn().mockResolvedValue("❯ \n"),
-    };
-    const agentWithDetection: Agent = {
+  it("detects activity using agent-native mechanism", async () => {
+    const agentWithState: Agent = {
       ...mockAgent,
-      detectActivity: vi.fn().mockReturnValue("idle"),
+      getActivityState: vi.fn().mockResolvedValue("idle"),
     };
-    const registryWithDetection: PluginRegistry = {
+    const registryWithState: PluginRegistry = {
       ...mockRegistry,
       get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return runtimeWithOutput;
-        if (slot === "agent") return agentWithDetection;
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return agentWithState;
         return null;
       }),
     };
@@ -406,17 +388,12 @@ describe("get", () => {
 
     const sm = createSessionManager({
       config,
-      registry: registryWithDetection,
+      registry: registryWithState,
     });
     const session = await sm.get("app-1");
 
-    // Verify getOutput was called
-    expect(runtimeWithOutput.getOutput).toHaveBeenCalledWith(
-      makeHandle("rt-1"),
-      30,
-    );
-    // Verify detectActivity was called
-    expect(agentWithDetection.detectActivity).toHaveBeenCalledWith("❯ \n");
+    // Verify getActivityState was called
+    expect(agentWithState.getActivityState).toHaveBeenCalled();
     // Verify activity state was set
     expect(session!.activity).toBe("idle");
   });

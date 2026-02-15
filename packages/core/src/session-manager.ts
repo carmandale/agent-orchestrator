@@ -178,15 +178,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         if (!alive) {
           session.status = "killed";
           session.activity = "exited";
-        } else {
-          // Runtime is alive — detect activity from terminal output
-          if (plugins.agent && plugins.runtime.getOutput) {
-            try {
-              const output = await plugins.runtime.getOutput(session.runtimeHandle, 30);
-              session.activity = plugins.agent.detectActivity(output);
-            } catch {
-              // Can't capture output — leave as idle
-            }
+        } else if (plugins.agent) {
+          // Runtime is alive — detect activity using agent-native mechanism
+          try {
+            session.activity = await plugins.agent.getActivityState(session);
+          } catch {
+            // Can't detect activity — leave as idle
           }
         }
       } catch {

@@ -185,8 +185,10 @@ export const manifest = {
  * If Claude Code changes its encoding scheme this will silently break
  * introspection. The path can be validated at runtime by checking whether
  * the resulting directory exists.
+ *
+ * Exported for testing purposes.
  */
-function toClaudeProjectPath(workspacePath: string): string {
+export function toClaudeProjectPath(workspacePath: string): string {
   // Handle Windows drive letters (C:\Users\... → C-Users-...)
   const normalized = workspacePath.replace(/\\/g, "/");
   return normalized.replace(/^\//, "").replace(/:/g, "").replace(/[/.]/g, "-");
@@ -567,6 +569,48 @@ function createClaudeCodeAgent(): Agent {
       if (entry.lastType === "assistant" || entry.lastType === "system") return false;
 
       return true;
+    },
+
+    async getActivityState(session: Session): Promise<ActivityState> {
+      if (!session.workspacePath) return "exited";
+
+      const projectPath = toClaudeProjectPath(session.workspacePath);
+      const projectDir = join(homedir(), ".claude", "projects", projectPath);
+
+      const sessionFile = await findLatestSessionFile(projectDir);
+      if (!sessionFile) return "exited";
+
+      const entry = await readLastJsonlEntry(sessionFile);
+      if (!entry) return "idle";
+
+      // Check staleness - no activity in 30 seconds means idle
+      const ageMs = Date.now() - entry.modifiedAt.getTime();
+      if (ageMs > 30_000) return "idle";
+
+      // Classify based on last JSONL entry type
+      switch (entry.lastType) {
+        case "user":
+        case "tool_use":
+          // Agent is processing user request or running tools
+          return "active";
+
+        case "assistant":
+        case "system":
+          // Agent finished its turn, waiting for user input
+          return "idle";
+
+        case "permission_request":
+          // Agent needs user approval for an action
+          return "waiting_input";
+
+        case "error":
+          // Agent encountered an error
+          return "blocked";
+
+        default:
+          // Unknown type, assume active
+          return "active";
+      }
     },
 
     async getSessionInfo(session: Session): Promise<AgentSessionInfo | null> {

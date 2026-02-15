@@ -69,6 +69,14 @@ function createCodexAgent(): Agent {
       return "active";
     },
 
+    async getActivityState(session: Session): Promise<ActivityState> {
+      // TODO: Implement using JSONL rollout files at ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+      // For now, fall back to process running check
+      if (!session.runtimeHandle) return "exited";
+      const running = await this.isProcessRunning(session.runtimeHandle);
+      return running ? "active" : "exited";
+    },
+
     async isProcessRunning(handle: RuntimeHandle): Promise<boolean> {
       try {
         if (handle.runtimeName === "tmux" && handle.id) {

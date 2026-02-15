@@ -63,6 +63,14 @@ function createOpenCodeAgent(): Agent {
       return "active";
     },
 
+    async getActivityState(session: Session): Promise<ActivityState> {
+      // TODO: Implement using SQLite database at ~/.local/share/opencode/opencode.db
+      // For now, fall back to process running check
+      if (!session.runtimeHandle) return "exited";
+      const running = await this.isProcessRunning(session.runtimeHandle);
+      return running ? "active" : "exited";
+    },
+
     async isProcessRunning(handle: RuntimeHandle): Promise<boolean> {
       try {
         if (handle.runtimeName === "tmux" && handle.id) {

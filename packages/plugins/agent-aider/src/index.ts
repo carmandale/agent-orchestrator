@@ -67,6 +67,14 @@ function createAiderAgent(): Agent {
       return "active";
     },
 
+    async getActivityState(session: Session): Promise<ActivityState> {
+      // TODO: Implement using chat history file mtime at .aider.chat.history.md
+      // For now, fall back to process running check
+      if (!session.runtimeHandle) return "exited";
+      const running = await this.isProcessRunning(session.runtimeHandle);
+      return running ? "active" : "exited";
+    },
+
     async isProcessRunning(handle: RuntimeHandle): Promise<boolean> {
       try {
         if (handle.runtimeName === "tmux" && handle.id) {
