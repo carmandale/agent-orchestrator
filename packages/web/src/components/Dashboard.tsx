@@ -66,7 +66,17 @@ export function Dashboard({ sessions, stats, orchestratorId }: DashboardProps) {
     if (!confirm(`Merge PR #${prNumber}?`)) return;
     const res = await fetch(`/api/prs/${prNumber}/merge`, { method: "POST" });
     if (!res.ok) {
-      console.error(`Failed to merge PR #${prNumber}:`, await res.text());
+      const errorText = await res.text();
+      console.error(`Failed to merge PR #${prNumber}:`, errorText);
+      try {
+        const errorData = JSON.parse(errorText) as { error: string; blockers?: string[] };
+        const message = errorData.blockers
+          ? `${errorData.error}\n\nBlockers:\n${errorData.blockers.map((b) => `• ${b}`).join("\n")}`
+          : errorData.error;
+        alert(`Failed to merge PR #${prNumber}:\n\n${message}`);
+      } catch {
+        alert(`Failed to merge PR #${prNumber}:\n\n${errorText}`);
+      }
     }
   };
 

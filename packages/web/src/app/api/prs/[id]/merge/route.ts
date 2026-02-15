@@ -18,7 +18,15 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: "PR not found" }, { status: 404 });
     }
 
-    const project = config.projects[session.projectId];
+    // Get project config — fall back to single project if projectId is missing
+    let project = config.projects[session.projectId];
+    if (!project) {
+      const projectIds = Object.keys(config.projects);
+      if (projectIds.length === 1) {
+        project = config.projects[projectIds[0]];
+      }
+    }
+
     const scm = getSCM(registry, project);
     if (!scm) {
       return NextResponse.json(

@@ -98,16 +98,31 @@ function validateStatus(raw: string | undefined): SessionStatus {
   return "spawning";
 }
 
+/**
+ * Infer projectId from session ID by matching against project sessionPrefix values.
+ * Returns the first matching project ID, or empty string if no match.
+ */
+function inferProjectId(sessionId: SessionId, config: OrchestratorConfig): string {
+  for (const [projectId, project] of Object.entries(config.projects)) {
+    // Match exact prefix: "ao-1" matches prefix "ao", not "aoc" or "a"
+    if (sessionId === project.sessionPrefix || sessionId.startsWith(`${project.sessionPrefix}-`)) {
+      return projectId;
+    }
+  }
+  return "";
+}
+
 /** Reconstruct a Session object from raw metadata key=value pairs. */
 function metadataToSession(
   sessionId: SessionId,
   meta: Record<string, string>,
+  config: OrchestratorConfig,
   createdAt?: Date,
   modifiedAt?: Date,
 ): Session {
   return {
     id: sessionId,
-    projectId: meta["project"] ?? "",
+    projectId: meta["project"] ?? inferProjectId(sessionId, config),
     status: validateStatus(meta["status"]),
     activity: "idle",
     branch: meta["branch"] || null,
@@ -442,7 +457,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // If stat fails, timestamps will fall back to current time
       }
 
-      const session = metadataToSession(sid, raw, createdAt, modifiedAt);
+      const session = metadataToSession(sid, raw, config, createdAt, modifiedAt);
 
       // Enrich with live runtime state and activity detection
       if (session.runtimeHandle) {
@@ -475,7 +490,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // If stat fails, timestamps will fall back to current time
     }
 
-    const session = metadataToSession(sessionId, raw, createdAt, modifiedAt);
+    const session = metadataToSession(sessionId, raw, config, createdAt, modifiedAt);
 
     // Enrich with live runtime state and activity detection
     if (session.runtimeHandle) {
