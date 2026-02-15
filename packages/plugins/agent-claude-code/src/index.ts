@@ -606,7 +606,7 @@ function createClaudeCodeAgent(): Agent {
       };
     },
 
-    async setupWorkspaceHooks(workspacePath: string, config: WorkspaceHooksConfig): Promise<void> {
+    async setupWorkspaceHooks(workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
       // Path to Claude settings directory in workspace
       const claudeDir = join(workspacePath, ".claude");
       const settingsPath = join(claudeDir, "settings.json");

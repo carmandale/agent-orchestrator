@@ -190,6 +190,7 @@ export function registerStart(program: Command): void {
             spinner.fail("Could not write CLAUDE.local.md");
             throw new Error(
               `Failed to update CLAUDE.local.md: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err },
             );
           }
 
@@ -205,6 +206,7 @@ export function registerStart(program: Command): void {
             spinner.fail("Could not setup agent hooks");
             throw new Error(
               `Failed to setup agent hooks: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err },
             );
           }
 
@@ -328,7 +330,7 @@ export function registerStop(program: Command): void {
     .action(async (projectArg?: string) => {
       try {
         const config = loadConfig();
-        const { projectId, project } = resolveProject(config, projectArg);
+        const { projectId: _projectId, project } = resolveProject(config, projectArg);
         const sessionId = `${project.sessionPrefix}-orchestrator`;
         const port = config.port;
 
