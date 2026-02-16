@@ -125,9 +125,12 @@ export async function generateRulesFromTemplates(projectType: ProjectType): Prom
   const templatesDir = join(__dirname, "../..", "templates", "rules");
   const rules: string[] = [];
 
-  // Always include base rules
-  const baseRules = readFileSync(join(templatesDir, "base.md"), "utf-8");
-  rules.push(baseRules.trim());
+  // Always include base rules (if available)
+  const basePath = join(templatesDir, "base.md");
+  if (existsSync(basePath)) {
+    const baseRules = readFileSync(basePath, "utf-8");
+    rules.push(baseRules.trim());
+  }
 
   // Add language-specific rules
   for (const lang of projectType.languages) {
