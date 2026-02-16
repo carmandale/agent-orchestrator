@@ -552,20 +552,18 @@ describe("scm-github plugin", () => {
       expect(ghMock).toHaveBeenCalledTimes(1);
     });
 
-    it("returns clean result for closed PRs without querying mergeable status", async () => {
+    it("still checks mergeability for closed PRs (not merged)", async () => {
       // getPRState call
       mockGh({ state: "CLOSED" });
+      // PR view (closed PRs still get checked)
+      mockGh({ mergeable: "CONFLICTING", reviewDecision: "APPROVED", mergeStateStatus: "DIRTY", isDraft: false });
+      // CI checks
+      mockGh([]);
 
       const result = await scm.getMergeability(pr);
-      expect(result).toEqual({
-        mergeable: true,
-        ciPassing: true,
-        approved: true,
-        noConflicts: true,
-        blockers: [],
-      });
-      // Should only call gh once (for getPRState), not for mergeable/CI
-      expect(ghMock).toHaveBeenCalledTimes(1);
+      expect(result.noConflicts).toBe(false);
+      expect(result.blockers).toContain("Merge conflicts");
+      // Closed PRs go through normal checks, unlike merged PRs
     });
 
     it("returns mergeable when everything is clear", async () => {
