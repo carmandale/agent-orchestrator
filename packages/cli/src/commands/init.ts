@@ -27,11 +27,55 @@ interface EnvironmentInfo {
   gitRemote: string | null;
   ownerRepo: string | null;
   currentBranch: string | null;
+  defaultBranch: string | null;
   hasTmux: boolean;
   hasGh: boolean;
   ghAuthed: boolean;
   hasLinearKey: boolean;
   hasSlackWebhook: boolean;
+}
+
+async function detectDefaultBranch(
+  workingDir: string,
+  ownerRepo: string | null,
+): Promise<string | null> {
+  // Method 1: Try to get from git symbolic-ref (most reliable)
+  const symbolicRef = await git(["symbolic-ref", "refs/remotes/origin/HEAD"], workingDir);
+  if (symbolicRef) {
+    // Output: refs/remotes/origin/main
+    const match = symbolicRef.match(/refs\/remotes\/origin\/(.+)$/);
+    if (match) {
+      return match[1];
+    }
+  }
+
+  // Method 2: Try GitHub API via gh CLI
+  if (ownerRepo) {
+    const ghResult = await gh([
+      "repo",
+      "view",
+      ownerRepo,
+      "--json",
+      "defaultBranchRef",
+      "-q",
+      ".defaultBranchRef.name",
+    ]);
+    if (ghResult) {
+      return ghResult;
+    }
+  }
+
+  // Method 3: Check which common branch exists locally
+  const commonBranches = ["main", "master", "next", "develop"];
+  for (const branch of commonBranches) {
+    const exists = await git(["rev-parse", "--verify", `origin/${branch}`], workingDir);
+    if (exists) {
+      return branch;
+    }
+  }
+
+  // Fallback: return "main" as a reasonable default
+  return "main";
 }
 
 async function detectEnvironment(workingDir: string): Promise<EnvironmentInfo> {
@@ -55,8 +99,11 @@ async function detectEnvironment(workingDir: string): Promise<EnvironmentInfo> {
     }
   }
 
-  // Get current branch
+  // Get current branch (for display only, NOT for defaultBranch)
   const currentBranch = isGitRepo ? await git(["branch", "--show-current"], workingDir) : null;
+
+  // Detect the actual default branch (main/master/next)
+  const defaultBranch = isGitRepo ? await detectDefaultBranch(workingDir, ownerRepo) : null;
 
   // Check for tmux
   const hasTmux = (await execSilent("which", ["tmux"])) !== null;
@@ -80,6 +127,7 @@ async function detectEnvironment(workingDir: string): Promise<EnvironmentInfo> {
     gitRemote,
     ownerRepo,
     currentBranch,
+    defaultBranch,
     hasTmux,
     hasGh,
     ghAuthed,
@@ -219,7 +267,7 @@ export function registerInit(program: Command): void {
             "Local path to repo",
             env.isGitRepo ? workingDir : `~/${projectId}`,
           );
-          const defaultBranch = await prompt(rl, "Default branch", env.currentBranch || "main");
+          const defaultBranch = await prompt(rl, "Default branch", env.defaultBranch || "main");
 
           // Ask about tracker
           console.log(chalk.bold("\n  Issue Tracker\n"));
@@ -368,7 +416,7 @@ async function handleAutoMode(outputPath: string, smart: boolean): Promise<void>
   const projectId = env.isGitRepo ? basename(workingDir) : "my-project";
   const repo = env.ownerRepo || "owner/repo";
   const path = env.isGitRepo ? workingDir : `~/${projectId}`;
-  const defaultBranch = env.currentBranch || "main";
+  const defaultBranch = env.defaultBranch || "main";
 
   const config: Record<string, unknown> = {
     dataDir: "~/.agent-orchestrator",
