@@ -401,16 +401,13 @@ async function handleAutoMode(outputPath: string, smart: boolean): Promise<void>
   console.log();
 
   // Generate agent rules
-  let agentRules: string;
-
   if (smart) {
     // TODO: Implement AI-powered rule generation in future PR
     console.log(chalk.yellow("  ⚠ AI-powered rule generation not yet implemented"));
     console.log(chalk.dim("  Using template-based rules for now...\n"));
-    agentRules = await generateRulesFromTemplates(projectType);
-  } else {
-    agentRules = await generateRulesFromTemplates(projectType);
   }
+
+  const agentRules = await generateRulesFromTemplates(projectType);
 
   // Build config with smart defaults
   const projectId = env.isGitRepo ? basename(workingDir) : "my-project";
