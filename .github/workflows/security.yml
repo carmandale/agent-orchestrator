@@ -30,20 +30,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
-  dependency-review:
-    name: Dependency Review
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    # Note: Requires GitHub Advanced Security (available for public repos or Enterprise)
-    continue-on-error: true  # Don't fail the build if this feature is unavailable
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Dependency Review
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: moderate
+  # dependency-review:
+  #   Commented out - requires Dependency graph to be enabled in repo settings
+  #   To enable: go to Settings > Code security > Enable "Dependency graph"
+  #   https://github.com/ComposioHQ/agent-orchestrator/settings/security_analysis
+  #
+  #   name: Dependency Review
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'pull_request'
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Dependency Review
+  #       uses: actions/dependency-review-action@v4
+  #       with:
+  #         fail-on-severity: moderate
 
   npm-audit:
     name: NPM Audit
