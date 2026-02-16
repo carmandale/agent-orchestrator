@@ -22,6 +22,7 @@ import {
   type EventType,
   type OrchestratorEvent,
   type OrchestratorConfig,
+  type ProjectConfig,
   type ReactionConfig,
   type ReactionResult,
   type PluginRegistry,
@@ -35,6 +36,7 @@ import {
 } from "./types.js";
 import { updateMetadata } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
+import { MainBranchTracker } from "./main-branch-tracker.js";
 
 /** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
 function parseDuration(str: string): number {
@@ -141,6 +143,8 @@ function eventToReactionKey(eventType: EventType): string | null {
       return "bugbot-comments";
     case "merge.conflicts":
       return "merge-conflicts";
+    case "pr.rebase_conflict":
+      return "rebase-conflicts";
     case "merge.ready":
       return "approved-and-green";
     case "session.stuck":
@@ -174,6 +178,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
   const states = new Map<SessionId, SessionStatus>();
   const reactionTrackers = new Map<string, ReactionTracker>(); // "sessionId:reactionKey"
+  const mainBranchTracker = new MainBranchTracker();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let polling = false; // re-entrancy guard
   let allCompleteEmitted = false; // guard against repeated all_complete
@@ -500,6 +505,113 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     }
   }
 
+  /** Check for main branch updates and trigger rebases. */
+  async function checkMainBranchUpdates(sessions: Session[]): Promise<void> {
+    // Group sessions by project (only those with open PRs)
+    const projectSessions = new Map<string, Session[]>();
+    for (const session of sessions) {
+      if (!session.pr || session.status === "merged" || session.status === "killed") {
+        continue;
+      }
+      const list = projectSessions.get(session.projectId) ?? [];
+      list.push(session);
+      projectSessions.set(session.projectId, list);
+    }
+
+    // Check each project's main branch
+    for (const [projectId, projectSessionsList] of projectSessions.entries()) {
+      const project = config.projects[projectId];
+      if (!project) continue;
+
+      const scm = project.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
+      if (!scm || !scm.rebaseAndPush) continue;
+
+      try {
+        // Check if main advanced
+        const result = await mainBranchTracker.checkMainAdvanced(project, projectId, scm);
+        if (!result.advanced) continue;
+
+        // Trigger rebases for all open PRs
+        await rebaseAllSessions(projectSessionsList, project, scm);
+      } catch {
+        // Continue with other projects
+      }
+    }
+  }
+
+  /** Rebase all sessions for a project. */
+  async function rebaseAllSessions(
+    sessions: Session[],
+    project: ProjectConfig,
+    scm: SCM,
+  ): Promise<void> {
+    const agent = registry.get<Agent>("agent", project.agent ?? config.defaults.agent);
+
+    for (const session of sessions) {
+      // Skip if agent is actively processing
+      if (agent && session.runtimeHandle) {
+        try {
+          const activity = await agent.getActivityState(session);
+          if (activity && activity.state === "active") continue;
+        } catch {
+          continue; // Can't determine - skip to be safe
+        }
+      }
+
+      if (!session.workspacePath || !session.pr || !scm.rebaseAndPush) continue;
+
+      const sessionsDir = getSessionsDir(config.configPath, project.path);
+
+      // Attempt rebase
+      const result = await scm.rebaseAndPush({
+        workspacePath: session.workspacePath,
+        branch: session.pr.branch,
+        baseBranch: project.defaultBranch,
+        remoteName: "origin",
+      });
+
+      if (result.success) {
+        // Silent success - update metadata
+        updateMetadata(sessionsDir, session.id, {
+          lastRebaseTime: new Date().toISOString(),
+          lastRebaseMainSHA: result.newSha ?? "",
+          rebaseStatus: "clean",
+        });
+
+        // Emit low-priority info event
+        const event = createEvent("pr.rebased", {
+          sessionId: session.id,
+          projectId: session.projectId,
+          message: `Rebased ${session.id} onto ${project.defaultBranch}`,
+          priority: "info",
+        });
+        await notifyHuman(event, "info");
+      } else if (result.conflicted) {
+        // Conflicts - escalate to human
+        updateMetadata(sessionsDir, session.id, {
+          rebaseStatus: "conflicted",
+          lastRebaseAttempt: new Date().toISOString(),
+        });
+
+        const event = createEvent("pr.rebase_conflict", {
+          sessionId: session.id,
+          projectId: session.projectId,
+          message: `${session.id}: Rebase conflicts with ${project.defaultBranch}`,
+          priority: "urgent",
+          data: { prUrl: session.pr.url },
+        });
+        await notifyHuman(event, "urgent");
+      } else {
+        // Other errors - log to metadata, continue
+        updateMetadata(sessionsDir, session.id, {
+          rebaseStatus: "error",
+          rebaseError: result.error ?? "Unknown error",
+          lastRebaseAttempt: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
   /** Run one polling cycle across all sessions. */
   async function pollAll(): Promise<void> {
     // Re-entrancy guard: skip if previous poll is still running
@@ -508,6 +620,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
     try {
       const sessions = await sessionManager.list();
+
+      // Check for main branch advancement and trigger rebases
+      await checkMainBranchUpdates(sessions);
 
       // Include sessions that are active OR whose status changed from what we last saw
       // (e.g., list() detected a dead runtime and marked it "killed" — we need to
