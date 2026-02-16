@@ -114,12 +114,23 @@ async function gatherSessionInfo(
     // Detect activity from agent's last message type
     // Check staleness first (30+ seconds = idle), matching getActivityState() behavior
     const lastModified = introspection?.lastLogModified;
-    const ageMs = lastModified ? Date.now() - lastModified.getTime() : 0;
 
-    if (ageMs > 30_000) {
-      // No activity in 30+ seconds = idle (staleness)
-      activity = "idle";
+    if (lastModified) {
+      const ageMs = Date.now() - lastModified.getTime();
+      if (ageMs > 30_000) {
+        // No activity in 30+ seconds = idle (staleness)
+        activity = "idle";
+      } else {
+        // Fresh session, classify by message type
+        const msgType = introspection?.lastMessageType;
+        if (msgType === "summary" || msgType === "assistant" || msgType === "result") {
+          activity = "ready";
+        } else if (msgType === "tool_use" || msgType === "user") {
+          activity = "active";
+        }
+      }
     } else {
+      // No timestamp available, classify by message type without staleness check
       const msgType = introspection?.lastMessageType;
       if (msgType === "summary" || msgType === "assistant" || msgType === "result") {
         activity = "ready";
