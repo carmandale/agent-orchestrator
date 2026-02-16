@@ -111,11 +111,12 @@ async function detectEnvironment(workingDir: string): Promise<EnvironmentInfo> {
   // Check for gh CLI (direct invocation more portable than 'which')
   const hasGh = (await execSilent("gh", ["--version"])) !== null;
 
-  // Check gh auth status
+  // Check gh auth status (rely on exit code, not output string)
   let ghAuthed = false;
   if (hasGh) {
     const authStatus = await gh(["auth", "status"]);
-    ghAuthed = authStatus !== null && !authStatus.includes("not logged in");
+    // gh() returns null on error, non-null on success
+    ghAuthed = authStatus !== null;
   }
 
   // Check for API keys in environment
@@ -377,7 +378,7 @@ async function handleAutoMode(outputPath: string, smart: boolean): Promise<void>
   const env = await detectEnvironment(workingDir);
 
   // Detect project type
-  const projectType = await detectProjectType(workingDir);
+  const projectType = detectProjectType(workingDir);
 
   // Show detection results
   if (env.isGitRepo) {
@@ -407,7 +408,7 @@ async function handleAutoMode(outputPath: string, smart: boolean): Promise<void>
     console.log(chalk.dim("  Using template-based rules for now...\n"));
   }
 
-  const agentRules = await generateRulesFromTemplates(projectType);
+  const agentRules = generateRulesFromTemplates(projectType);
 
   // Build config with smart defaults
   const projectId = env.isGitRepo ? basename(workingDir) : "my-project";

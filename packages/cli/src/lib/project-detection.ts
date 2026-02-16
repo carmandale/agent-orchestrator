@@ -13,7 +13,7 @@ export interface ProjectType {
   packageManager?: string;
 }
 
-export async function detectProjectType(dir: string): Promise<ProjectType> {
+export function detectProjectType(dir: string): ProjectType {
   const hasFile = (name: string) => existsSync(join(dir, name));
   const readJson = (name: string) => {
     try {
@@ -121,7 +121,7 @@ export async function detectProjectType(dir: string): Promise<ProjectType> {
   return type;
 }
 
-export async function generateRulesFromTemplates(projectType: ProjectType): Promise<string> {
+export function generateRulesFromTemplates(projectType: ProjectType): string {
   const templatesDir = join(__dirname, "../..", "templates", "rules");
   const rules: string[] = [];
 
