@@ -1,10 +1,11 @@
 import chalk from "chalk";
 import ora from "ora";
 import type { Command } from "commander";
-import { loadConfig, getSessionsDir } from "@composio/ao-core";
+import { getSessionsDir } from "@composio/ao-core";
 import { exec, gh, getTmuxSessions } from "../lib/shell.js";
-import { readMetadata } from "../lib/metadata.js";
 import { matchesPrefix } from "../lib/session-utils.js";
+import { getConfig } from "../services/ConfigService.js";
+import { MetadataService } from "../services/MetadataService.js";
 
 interface ReviewInfo {
   session: string;
@@ -65,7 +66,7 @@ export function registerReviewCheck(program: Command): void {
     .argument("[project]", "Project ID (checks all if omitted)")
     .option("--dry-run", "Show what would be done without sending messages")
     .action(async (projectId: string | undefined, opts: { dryRun?: boolean }) => {
-      const config = loadConfig();
+      const config = getConfig();
 
       if (projectId && !config.projects[projectId]) {
         console.error(chalk.red(`Unknown project: ${projectId}`));
@@ -82,9 +83,10 @@ export function registerReviewCheck(program: Command): void {
         const prefix = project.sessionPrefix || pid;
         const projectSessions = allTmux.filter((s) => matchesPrefix(s, prefix));
         const sessionsDir = getSessionsDir(config.configPath, project.path);
+        const metadata = new MetadataService(sessionsDir);
 
         for (const session of projectSessions) {
-          const meta = readMetadata(`${sessionsDir}/${session}`);
+          const meta = metadata.read(session);
           if (!meta?.pr) continue;
 
           const prNum = meta.pr.match(/(\d+)\s*$/)?.[1];

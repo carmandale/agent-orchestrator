@@ -11,11 +11,11 @@ import {
   type CIStatus,
   type ReviewDecision,
   type ActivityState,
-  loadConfig,
   getSessionsDir,
 } from "@composio/ao-core";
 import { git, getTmuxSessions, getTmuxActivity } from "../lib/shell.js";
-import { readMetadata } from "../lib/metadata.js";
+import { getConfig } from "../services/ConfigService.js";
+import { MetadataService } from "../services/MetadataService.js";
 import {
   banner,
   header,
@@ -78,14 +78,13 @@ function buildSessionForIntrospect(
 
 async function gatherSessionInfo(
   sessionName: string,
-  sessionDir: string,
+  metadata: MetadataService,
   agent: Agent,
   scm: SCM,
   projectConfig: ProjectConfig,
   readyThresholdMs?: number,
 ): Promise<SessionInfo> {
-  const metaFile = `${sessionDir}/${sessionName}`;
-  const meta = readMetadata(metaFile);
+  const meta = metadata.read(sessionName);
 
   let branch = meta?.branch ?? null;
   const status = meta?.status ?? null;
@@ -242,7 +241,7 @@ export function registerStatus(program: Command): void {
     .action(async (opts: { project?: string; json?: boolean }) => {
       let config: OrchestratorConfig;
       try {
-        config = loadConfig();
+        config = getConfig();
       } catch {
         console.log(chalk.yellow("No config found. Run `ao init` first."));
         console.log(chalk.dim("Falling back to session discovery...\n"));
@@ -272,6 +271,7 @@ export function registerStatus(program: Command): void {
         const prefix = projectConfig.sessionPrefix || projectId;
         const projectSessions = allTmux.filter((s) => matchesPrefix(s, prefix));
         const sessionsDir = getSessionsDir(config.configPath, projectConfig.path);
+        const metadata = new MetadataService(sessionsDir);
 
         // Resolve plugins for this project
         const agent = getAgent(config, projectId);
@@ -301,7 +301,7 @@ export function registerStatus(program: Command): void {
           .map((session) =>
             gatherSessionInfo(
               session,
-              sessionsDir,
+              metadata,
               agent,
               scm,
               projectConfig,

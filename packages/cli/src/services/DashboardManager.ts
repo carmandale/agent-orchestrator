@@ -9,7 +9,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { findWebDir } from "../lib/web-dir.js";
-import { exec } from "../lib/shell.js";
+import { ProcessManager } from "./ProcessManager.js";
 import type { ServicePorts } from "./PortManager.js";
 
 export interface DashboardStartOptions {
@@ -74,45 +74,16 @@ export class DashboardManager {
   async stop(ports: ServicePorts): Promise<void> {
     this.cancelBrowserOpen();
 
-    const allPorts = [ports.dashboard, ports.terminalWs, ports.directTerminalWs];
-    const allPids: string[] = [];
-
-    for (const port of allPorts) {
-      try {
-        const { stdout } = await exec("lsof", ["-ti", `:${port}`]);
-        const pids = stdout
-          .trim()
-          .split("\n")
-          .filter((pid) => pid.length > 0);
-        allPids.push(...pids);
-      } catch {
-        // Port not in use
-      }
-    }
-
-    if (allPids.length === 0) {
-      return;
-    }
-
-    const uniquePids = [...new Set(allPids)];
-
-    try {
-      await exec("kill", uniquePids);
-    } catch {
-      // Some processes may have already exited
-    }
+    const pm = new ProcessManager();
+    await pm.killByPorts([ports.dashboard, ports.terminalWs, ports.directTerminalWs]);
   }
 
   /**
    * Check if dashboard is running on a given port.
    */
   async isRunning(port: number): Promise<boolean> {
-    try {
-      const { stdout } = await exec("lsof", ["-ti", `:${port}`]);
-      return stdout.trim().length > 0;
-    } catch {
-      return false;
-    }
+    const pm = new ProcessManager();
+    return pm.isPortInUse(port);
   }
 
   /** Schedule browser open after a delay */

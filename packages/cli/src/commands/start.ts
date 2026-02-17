@@ -16,9 +16,6 @@ import {
   hasTmuxSession,
   newTmuxSession,
   tmuxSendKeys,
-  writeMetadata,
-  readMetadata,
-  deleteMetadata,
   getSessionsDir,
   type OrchestratorConfig,
   type ProjectConfig,
@@ -28,6 +25,7 @@ import { getAgent } from "../lib/plugins.js";
 import { getConfig, getConfigPath } from "../services/ConfigService.js";
 import { PortManager } from "../services/PortManager.js";
 import { DashboardManager } from "../services/DashboardManager.js";
+import { MetadataService } from "../services/MetadataService.js";
 
 /**
  * Ensure CLAUDE.orchestrator.md exists in the project directory.
@@ -177,6 +175,7 @@ export function registerStart(program: Command): void {
           // Create orchestrator tmux session (unless --no-orchestrator or already exists)
           if (opts?.orchestrator !== false) {
             const sessionsDir = getSessionsDir(config.configPath, project.path);
+            const metadata = new MetadataService(sessionsDir);
 
             // Check if orchestrator session already exists
             exists = await hasTmuxSession(sessionId);
@@ -189,13 +188,9 @@ export function registerStart(program: Command): void {
               );
 
               // Update metadata with current dashboard port
-              const existingMetadata = readMetadata(sessionsDir, sessionId);
-              if (existingMetadata) {
-                writeMetadata(sessionsDir, sessionId, {
-                  ...existingMetadata,
-                  dashboardPort: ports.dashboard,
-                });
-              }
+              metadata.update(sessionId, {
+                dashboardPort: String(ports.dashboard),
+              });
             } else {
               try {
                 // Ensure CLAUDE.orchestrator.md exists
@@ -274,7 +269,7 @@ export function registerStart(program: Command): void {
                     data: {},
                   });
 
-                  writeMetadata(sessionsDir, sessionId, {
+                  metadata.write(sessionId, {
                     worktree: project.path,
                     branch: project.defaultBranch,
                     status: "working",
@@ -357,12 +352,11 @@ export function registerStop(program: Command): void {
         const { projectId: _projectId, project } = resolveProject(config, projectArg);
         const sessionId = `${project.sessionPrefix}-orchestrator`;
         const sessionsDir = getSessionsDir(config.configPath, project.path);
+        const metadata = new MetadataService(sessionsDir);
 
         // Read port from metadata (actual port used), fallback to config default
-        const metadata = readMetadata(sessionsDir, sessionId);
-        const dashboardPort = metadata?.dashboardPort
-          ? Number(metadata.dashboardPort)
-          : (config.port ?? 3000);
+        const sessionMeta = metadata.read(sessionId);
+        const dashboardPort = sessionMeta?.dashboardPort ?? (config.port ?? 3000);
 
         // WebSocket ports use fixed defaults (not stored in metadata)
         const terminalWsPort = 3001;
@@ -378,7 +372,7 @@ export function registerStop(program: Command): void {
           spinner.succeed("Orchestrator session stopped");
 
           // Archive metadata
-          deleteMetadata(sessionsDir, sessionId, true);
+          metadata.delete(sessionId, true);
         } else {
           console.log(chalk.yellow(`Orchestrator session "${sessionId}" is not running`));
         }

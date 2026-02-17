@@ -43,6 +43,10 @@ vi.mock("@composio/ao-core", async (importOriginal) => {
   };
 });
 
+vi.mock("../../src/services/ConfigService.js", () => ({
+  getConfig: () => mockConfigRef.current,
+}));
+
 let tmpDir: string;
 let sessionsDir: string;
 

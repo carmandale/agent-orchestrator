@@ -53,6 +53,10 @@ vi.mock("@composio/ao-core", async (importOriginal) => {
   };
 });
 
+vi.mock("../../src/services/ConfigService.js", () => ({
+  getConfig: () => mockConfigRef.current,
+}));
+
 vi.mock("../../src/lib/plugins.js", () => ({
   getAgent: () => ({
     name: "claude-code",

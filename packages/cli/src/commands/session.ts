@@ -1,10 +1,11 @@
 import chalk from "chalk";
 import type { Command } from "commander";
-import { loadConfig, getSessionsDir, type OrchestratorConfig } from "@composio/ao-core";
+import { getSessionsDir, type OrchestratorConfig } from "@composio/ao-core";
 import { tmux, git, gh, getTmuxSessions, getTmuxActivity } from "../lib/shell.js";
-import { readMetadata, archiveMetadata } from "../lib/metadata.js";
 import { formatAge } from "../lib/format.js";
 import { findProjectForSession, matchesPrefix } from "../lib/session-utils.js";
+import { getConfig } from "../services/ConfigService.js";
+import { MetadataService } from "../services/MetadataService.js";
 
 async function killSession(
   config: OrchestratorConfig,
@@ -13,8 +14,8 @@ async function killSession(
 ): Promise<void> {
   const project = config.projects[projectId];
   const sessionsDir = getSessionsDir(config.configPath, project.path);
-  const metaFile = `${sessionsDir}/${sessionName}`;
-  const meta = readMetadata(metaFile);
+  const metadata = new MetadataService(sessionsDir);
+  const meta = metadata.read(sessionName);
 
   // Kill tmux session
   const killed = await tmux("kill-session", "-t", sessionName);
@@ -36,7 +37,7 @@ async function killSession(
   }
 
   // Archive metadata
-  archiveMetadata(sessionsDir, sessionName);
+  metadata.delete(sessionName, true);
   console.log(chalk.green(`  Archived metadata`));
 }
 
@@ -48,7 +49,7 @@ export function registerSession(program: Command): void {
     .description("List all sessions")
     .option("-p, --project <id>", "Filter by project ID")
     .action(async (opts: { project?: string }) => {
-      const config = loadConfig();
+      const config = getConfig();
       if (opts.project && !config.projects[opts.project]) {
         console.error(chalk.red(`Unknown project: ${opts.project}`));
         process.exit(1);
@@ -62,6 +63,7 @@ export function registerSession(program: Command): void {
         const prefix = project.sessionPrefix || projectId;
         const projectSessions = allTmux.filter((s) => matchesPrefix(s, prefix));
         const sessionsDir = getSessionsDir(config.configPath, project.path);
+        const metadata = new MetadataService(sessionsDir);
 
         console.log(chalk.bold(`\n${project.name || projectId}:`));
 
@@ -71,7 +73,7 @@ export function registerSession(program: Command): void {
         }
 
         for (const name of projectSessions.sort()) {
-          const meta = readMetadata(`${sessionsDir}/${name}`);
+          const meta = metadata.read(name);
           const activityTs = await getTmuxActivity(name);
           const age = activityTs ? formatAge(activityTs) : "-";
 
@@ -97,7 +99,7 @@ export function registerSession(program: Command): void {
     .description("Kill a session and remove its worktree")
     .argument("<session>", "Session name to kill")
     .action(async (sessionName: string) => {
-      const config = loadConfig();
+      const config = getConfig();
       const projectId = findProjectForSession(config, sessionName);
       if (!projectId) {
         console.error(chalk.red(`Could not determine project for session: ${sessionName}`));
@@ -113,7 +115,7 @@ export function registerSession(program: Command): void {
     .option("-p, --project <id>", "Filter by project ID")
     .option("--dry-run", "Show what would be cleaned up without doing it")
     .action(async (opts: { project?: string; dryRun?: boolean }) => {
-      const config = loadConfig();
+      const config = getConfig();
       if (opts.project && !config.projects[opts.project]) {
         console.error(chalk.red(`Unknown project: ${opts.project}`));
         process.exit(1);
@@ -132,9 +134,10 @@ export function registerSession(program: Command): void {
         const prefix = project.sessionPrefix || projectId;
         const projectSessions = allTmux.filter((s) => matchesPrefix(s, prefix));
         const sessionsDir = getSessionsDir(config.configPath, project.path);
+        const metadata = new MetadataService(sessionsDir);
 
         for (const sessionName of projectSessions) {
-          const meta = readMetadata(`${sessionsDir}/${sessionName}`);
+          const meta = metadata.read(sessionName);
           if (!meta) continue;
 
           let shouldKill = false;

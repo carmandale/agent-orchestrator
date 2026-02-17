@@ -4,7 +4,6 @@ import chalk from "chalk";
 import ora from "ora";
 import type { Command } from "commander";
 import {
-  loadConfig,
   buildPrompt,
   tmuxSendKeys,
   getWorktreesDir,
@@ -14,10 +13,11 @@ import {
   type ProjectConfig,
 } from "@composio/ao-core";
 import { exec, git, getTmuxSessions } from "../lib/shell.js";
-import { writeMetadata, findSessionForIssue } from "../lib/metadata.js";
 import { banner } from "../lib/format.js";
 import { getAgent } from "../lib/plugins.js";
 import { escapeRegex } from "../lib/session-utils.js";
+import { getConfig } from "../services/ConfigService.js";
+import { MetadataService } from "../services/MetadataService.js";
 
 /**
  * Find the next available session number for a prefix.
@@ -209,7 +209,8 @@ async function spawnSession(
     validateAndStoreOrigin(config.configPath, project.path);
     const liveBranch = await git(["branch", "--show-current"], worktreePath);
 
-    writeMetadata(join(sessionsDir, sessionName), {
+    const metadata = new MetadataService(sessionsDir);
+    metadata.write(sessionName, {
       worktree: worktreePath,
       branch: liveBranch || branch || "detached",
       status: "spawning",
@@ -265,7 +266,7 @@ export function registerSpawn(program: Command): void {
     .argument("[issue]", "Issue identifier (e.g. INT-1234, #42) - must exist in tracker")
     .option("--open", "Open session in terminal tab")
     .action(async (projectId: string, issueId: string | undefined, opts: { open?: boolean }) => {
-      const config = loadConfig();
+      const config = getConfig();
       const project = config.projects[projectId];
       if (!project) {
         console.error(
@@ -294,7 +295,7 @@ export function registerBatchSpawn(program: Command): void {
     .argument("<issues...>", "Issue identifiers")
     .option("--open", "Open sessions in terminal tabs")
     .action(async (projectId: string, issues: string[], opts: { open?: boolean }) => {
-      const config = loadConfig();
+      const config = getConfig();
       const project = config.projects[projectId];
       if (!project) {
         console.error(
@@ -318,6 +319,7 @@ export function registerBatchSpawn(program: Command): void {
       const spawnedIssues = new Set<string>();
 
       const sessionsDir = getSessionsDir(config.configPath, project.path);
+      const metadata = new MetadataService(sessionsDir);
 
       for (const issue of issues) {
         // Duplicate detection — check both existing sessions and same-run duplicates
@@ -326,7 +328,7 @@ export function registerBatchSpawn(program: Command): void {
           skipped.push({ issue, existing: "(this batch)" });
           continue;
         }
-        const existing = await findSessionForIssue(sessionsDir, issue, allTmux, projectId);
+        const existing = metadata.findByIssue(issue, allTmux, projectId);
         if (existing) {
           console.log(chalk.yellow(`  Skip ${issue} — already has session: ${existing}`));
           skipped.push({ issue, existing });
