@@ -5,6 +5,7 @@ import chalk from "chalk";
 import type { Command } from "commander";
 import { loadConfig } from "@composio/ao-core";
 import { findWebDir } from "../lib/web-dir.js";
+import { rebuildDashboard } from "../lib/dashboard-rebuild.js";
 
 export function registerDashboard(program: Command): void {
   program
@@ -12,7 +13,8 @@ export function registerDashboard(program: Command): void {
     .description("Start the web dashboard")
     .option("-p, --port <port>", "Port to listen on")
     .option("--no-open", "Don't open browser automatically")
-    .action(async (opts: { port?: string; open?: boolean }) => {
+    .option("--rebuild", "Clean stale build artifacts and rebuild before starting")
+    .action(async (opts: { port?: string; open?: boolean; rebuild?: boolean }) => {
       const config = loadConfig();
       const port = opts.port ? parseInt(opts.port, 10) : config.port;
 
@@ -20,8 +22,6 @@ export function registerDashboard(program: Command): void {
         console.error(chalk.red("Invalid port number. Must be 1-65535."));
         process.exit(1);
       }
-
-      console.log(chalk.bold(`Starting dashboard on http://localhost:${port}\n`));
 
       const webDir = findWebDir();
 
@@ -34,9 +34,24 @@ export function registerDashboard(program: Command): void {
         process.exit(1);
       }
 
+      if (opts.rebuild) {
+        await rebuildDashboard(webDir);
+      }
+
+      console.log(chalk.bold(`Starting dashboard on http://localhost:${port}\n`));
+
       const child = spawn("npx", ["next", "dev", "-p", String(port)], {
         cwd: webDir,
-        stdio: "inherit",
+        stdio: ["inherit", "inherit", "pipe"],
+      });
+
+      const stderrChunks: string[] = [];
+
+      child.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        stderrChunks.push(text);
+        // Still show stderr to the user
+        process.stderr.write(data);
       });
 
       child.on("error", (err) => {
@@ -60,7 +75,34 @@ export function registerDashboard(program: Command): void {
 
       child.on("exit", (code) => {
         if (browserTimer) clearTimeout(browserTimer);
+
+        if (code !== 0 && code !== null && !opts.rebuild) {
+          const stderr = stderrChunks.join("");
+          if (looksLikeStaleBuild(stderr)) {
+            console.error(
+              chalk.yellow(
+                "\nThis looks like a stale build cache issue. Try:\n\n" +
+                  `  ${chalk.cyan("ao dashboard --rebuild")}\n`,
+              ),
+            );
+          }
+        }
+
         process.exit(code ?? 0);
       });
     });
+}
+
+/**
+ * Check if stderr output suggests stale build artifacts.
+ */
+function looksLikeStaleBuild(stderr: string): boolean {
+  const patterns = [
+    /Cannot find module.*vendor-chunks/,
+    /Cannot find module.*\.next/,
+    /Module not found.*\.next/,
+    /ENOENT.*\.next/,
+    /Could not find a production build/,
+  ];
+  return patterns.some((p) => p.test(stderr));
 }

@@ -1,45 +1,11 @@
-import { existsSync, lstatSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import type { Command } from "commander";
-import {
-  loadConfig,
-  buildPrompt,
-  tmuxSendKeys,
-  getWorktreesDir,
-  getSessionsDir,
-  validateAndStoreOrigin,
-  type OrchestratorConfig,
-  type ProjectConfig,
-} from "@composio/ao-core";
-import { exec, git, getTmuxSessions } from "../lib/shell.js";
-import { writeMetadata, findSessionForIssue } from "../lib/metadata.js";
+import { loadConfig, getSessionsDir, type OrchestratorConfig, type ProjectConfig } from "@composio/ao-core";
+import { exec, getTmuxSessions } from "../lib/shell.js";
+import { findSessionForIssue } from "../lib/metadata.js";
 import { banner } from "../lib/format.js";
-import { getAgent } from "../lib/plugins.js";
-import { escapeRegex } from "../lib/session-utils.js";
-
-/**
- * Find the next available session number for a prefix.
- *
- * There is an inherent TOCTOU gap between reading the session list and creating
- * the tmux session. If two spawns race, tmux new-session will fail with a
- * duplicate name error, which spawnSession already handles by throwing to the
- * caller (batch-spawn catches per-item failures and continues).
- */
-async function getNextSessionNumber(prefix: string): Promise<number> {
-  const sessions = await getTmuxSessions();
-  let max = 0;
-  const pattern = new RegExp(`^${escapeRegex(prefix)}-(\\d+)$`);
-  for (const s of sessions) {
-    const m = s.match(pattern);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      if (n > max) max = n;
-    }
-  }
-  return max + 1;
-}
+import { getSessionManager } from "../lib/create-session-manager.js";
 
 async function spawnSession(
   config: OrchestratorConfig,
@@ -48,211 +14,41 @@ async function spawnSession(
   issueId?: string,
   openTab?: boolean,
 ): Promise<string> {
-  const prefix = project.sessionPrefix || projectId;
-  const num = await getNextSessionNumber(prefix);
-  const sessionName = `${prefix}-${num}`;
-  const worktreesDir = getWorktreesDir(config.configPath, project.path);
-  const worktreePath = join(worktreesDir, sessionName);
-
-  const spinner = ora(`Creating session ${sessionName}`).start();
+  const spinner = ora("Creating session").start();
 
   try {
-    // Fetch latest from remote
-    await git(["fetch", "origin", "--quiet"], project.path);
+    const sm = await getSessionManager(config);
+    spinner.text = "Spawning session via core";
 
-    // Create worktree — sanitize issueId for git ref safety
-    const safeBranchSuffix = issueId
-      ? issueId
-          .replace(/^#/, "") // strip leading #
-          .replace(/[^\w./-]/g, "-") // replace non-ref-safe chars
-          .replace(/\.{2,}/g, ".") // no consecutive dots
-          .replace(/^[.-]|[.-]$/g, "") // no leading/trailing dots or dashes
-      : undefined;
-    const branch = safeBranchSuffix ? `feat/${safeBranchSuffix}` : undefined;
-    const defaultRef = `origin/${project.defaultBranch}`;
-
-    if (branch) {
-      const result = await git(
-        ["worktree", "add", "-b", branch, worktreePath, defaultRef],
-        project.path,
-      );
-      if (result === null) {
-        // Branch already exists — check it out in the new worktree
-        const fallback = await git(["worktree", "add", worktreePath, branch], project.path);
-        if (fallback === null) {
-          throw new Error(`Failed to create worktree at ${worktreePath} for branch ${branch}`);
-        }
-      }
-    } else {
-      const detached = await git(
-        ["worktree", "add", worktreePath, defaultRef, "--detach"],
-        project.path,
-      );
-      if (detached === null) {
-        throw new Error(`Failed to create detached worktree at ${worktreePath}`);
-      }
-    }
-
-    spinner.text = "Setting up workspace";
-
-    // Symlink shared resources
-    if (project.symlinks) {
-      for (const link of project.symlinks) {
-        const src = join(project.path, link);
-        const dest = join(worktreePath, link);
-        if (existsSync(src)) {
-          try {
-            unlinkSync(dest);
-          } catch {
-            // ignore
-          }
-          symlinkSync(src, dest);
-        }
-      }
-    }
-
-    // Always symlink common files if they exist
-    for (const file of ["CLAUDE.local.md", ".claude"]) {
-      const src = join(project.path, file);
-      const dest = join(worktreePath, file);
-      if (existsSync(src) && !existsSync(dest)) {
-        try {
-          const type = lstatSync(src).isDirectory() ? "dir" : "file";
-          symlinkSync(src, dest, type);
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    // Get agent plugin (used for hooks and launch)
-    const agent = getAgent(config, projectId);
-
-    // Calculate sessions directory once (used for hooks and metadata)
-    const sessionsDir = getSessionsDir(config.configPath, project.path);
-
-    // Setup agent hooks for automatic metadata updates (before agent launch)
-    spinner.text = "Configuring agent hooks";
-    if (agent.setupWorkspaceHooks) {
-      try {
-        await agent.setupWorkspaceHooks(worktreePath, {
-          dataDir: sessionsDir,
-          sessionId: sessionName,
-        });
-      } catch {
-        // Non-fatal — continue even if hook setup fails
-      }
-    }
-
-    spinner.text = "Creating tmux session";
-
-    // Get agent-specific environment variables (e.g., unset CLAUDECODE)
-    const agentEnv = agent.getEnvironment({
-      sessionId: sessionName,
-      projectConfig: project,
-      issueId,
-      permissions: project.agentConfig?.permissions,
-    });
-    const envVar = `${prefix.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}_SESSION`;
-    const tmuxArgs = [
-      "new-session",
-      "-d",
-      "-s",
-      sessionName,
-      "-c",
-      worktreePath,
-      "-e",
-      `${envVar}=${sessionName}`,
-      "-e",
-      `AO_SESSION=${sessionName}`,
-      "-e",
-      `AO_PROJECT_ID=${projectId}`,
-      "-e",
-      `AO_DATA_DIR=${sessionsDir}`,
-      "-e",
-      "DIRENV_LOG_FORMAT=",
-    ];
-
-    // Add agent environment variables
-    for (const [key, value] of Object.entries(agentEnv)) {
-      tmuxArgs.push("-e", `${key}=${value}`);
-    }
-
-    await exec("tmux", tmuxArgs);
-
-    // Run post-create hooks before agent launch (so environment is ready)
-    if (project.postCreate) {
-      for (const cmd of project.postCreate) {
-        await exec("tmux", ["send-keys", "-t", sessionName, "-l", cmd]);
-        await exec("tmux", ["send-keys", "-t", sessionName, "Enter"]);
-      }
-      // Allow hooks to complete before starting agent
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-
-    // Start agent via plugin
-    const launchCmd = agent.getLaunchCommand({
-      sessionId: sessionName,
-      projectConfig: project,
-      issueId,
-      permissions: project.agentConfig?.permissions,
-    });
-
-    await exec("tmux", ["send-keys", "-t", sessionName, "-l", launchCmd]);
-    await exec("tmux", ["send-keys", "-t", sessionName, "Enter"]);
-
-    spinner.text = "Writing metadata";
-
-    // Write metadata to project-specific directory
-    // Note: sessionsDir already calculated above for AO_DATA_DIR
-    mkdirSync(sessionsDir, { recursive: true });
-    validateAndStoreOrigin(config.configPath, project.path);
-    const liveBranch = await git(["branch", "--show-current"], worktreePath);
-
-    writeMetadata(join(sessionsDir, sessionName), {
-      worktree: worktreePath,
-      branch: liveBranch || branch || "detached",
-      status: "spawning",
-      project: projectId,
-      ...(issueId ? { issue: issueId } : {}),
-      createdAt: new Date().toISOString(),
-    });
-
-    spinner.succeed(`Session ${chalk.green(sessionName)} created`);
-
-    console.log(`  Worktree: ${chalk.dim(worktreePath)}`);
-    if (branch) console.log(`  Branch:   ${chalk.dim(branch)}`);
-    console.log(`  Attach:   ${chalk.dim(`tmux attach -t ${sessionName}`)}`);
-    console.log();
-
-    // Send composed prompt via tmux send-keys (keeps agent interactive for follow-ups)
-    const composedPrompt = buildPrompt({
-      project,
+    const session = await sm.spawn({
       projectId,
       issueId,
     });
 
-    if (composedPrompt) {
-      // Wait for agent to be fully ready (permission prompts, initialization, etc.)
-      // Longer delay ensures Claude is ready to receive input before sending prompt
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      await tmuxSendKeys(sessionName, composedPrompt);
-    }
+    spinner.succeed(`Session ${chalk.green(session.id)} created`);
+
+    console.log(`  Worktree: ${chalk.dim(session.workspacePath ?? "-")}`);
+    if (session.branch) console.log(`  Branch:   ${chalk.dim(session.branch)}`);
+
+    // Show the tmux name for attaching (stored in metadata or runtimeHandle)
+    const tmuxTarget = session.runtimeHandle?.id ?? session.id;
+    console.log(`  Attach:   ${chalk.dim(`tmux attach -t ${tmuxTarget}`)}`);
+    console.log();
 
     // Open terminal tab if requested
     if (openTab) {
       try {
-        await exec("open-iterm-tab", [sessionName]);
+        await exec("open-iterm-tab", [tmuxTarget]);
       } catch {
         // Terminal plugin not available
       }
     }
 
     // Output for scripting
-    console.log(`SESSION=${sessionName}`);
-    return sessionName;
+    console.log(`SESSION=${session.id}`);
+    return session.id;
   } catch (err) {
-    spinner.fail(`Failed to create session ${sessionName}`);
+    spinner.fail("Failed to create session");
     throw err;
   }
 }
@@ -279,7 +75,6 @@ export function registerSpawn(program: Command): void {
       try {
         await spawnSession(config, projectId, project, issueId, opts.open);
       } catch (err) {
-        // spawnSession may have printed spinner.fail, but we need error details
         console.error(chalk.red(`✗ ${err}`));
         process.exit(1);
       }
@@ -341,7 +136,6 @@ export function registerBatchSpawn(program: Command): void {
           allTmux = await getTmuxSessions();
         } catch (err) {
           const message = String(err);
-          // Don't try to categorize errors - CLI doesn't do tracker validation
           console.error(chalk.red(`  ✗ ${issue} — ${err}`));
           failed.push({ issue, error: message });
         }
