@@ -364,8 +364,12 @@ export function loadConfig(configPath?: string): OrchestratorConfig {
 
   const raw = readFileSync(path, "utf-8");
   const parsed = parseYaml(raw);
+  const config = validateConfig(parsed);
 
-  return validateConfig(parsed);
+  // Set the config path in the config object for hash generation
+  config.configPath = path;
+
+  return config;
 }
 
 /** Load config and return both config and resolved path */
