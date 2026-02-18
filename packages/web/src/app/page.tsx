@@ -70,6 +70,10 @@ export default async function Home() {
         );
         if (entry) project = entry[1];
       }
+      if (!project) {
+        const firstKey = Object.keys(config.projects)[0];
+        if (firstKey) project = config.projects[firstKey];
+      }
       const agent = getAgent(registry, project, config.defaults.agent);
       if (!agent) return Promise.resolve();
       return enrichSessionAgentSummary(sessions[i], core, agent);
