@@ -660,21 +660,22 @@ function createClaudeCodeAgent(): Agent {
         return "active";
       }
 
-      // Check staleness - no activity in 30 seconds means idle
       const ageMs = Date.now() - entry.modifiedAt.getTime();
-      if (ageMs > 30_000) return "idle";
 
       // Classify based on last JSONL entry type
       switch (entry.lastType) {
         case "user":
         case "tool_use":
-          // Agent is processing user request or running tools
-          return "active";
+          // Agent is processing user request or running tools.
+          // If recent (<30s), actively working. If stale, it's likely
+          // done and the file just wasn't updated — treat as ready.
+          return ageMs <= 30_000 ? "active" : "ready";
 
         case "assistant":
         case "system":
-          // Agent finished its turn, waiting for user input
-          return "idle";
+          // Agent finished its turn, waiting for user input.
+          // "ready" = recently finished (<5min), "idle" = stale (>5min)
+          return ageMs <= 300_000 ? "ready" : "idle";
 
         case "permission_request":
           // Agent needs user approval for an action
@@ -685,8 +686,8 @@ function createClaudeCodeAgent(): Agent {
           return "blocked";
 
         default:
-          // Unknown type, assume active
-          return "active";
+          // Unknown type, assume active if recent
+          return ageMs <= 30_000 ? "active" : "ready";
       }
     },
 

@@ -89,6 +89,8 @@ export function activityIcon(activity: ActivityState | null): string {
   switch (activity) {
     case "active":
       return chalk.green("working");
+    case "ready":
+      return chalk.cyan("ready");
     case "idle":
       return chalk.yellow("idle");
     case "waiting_input":

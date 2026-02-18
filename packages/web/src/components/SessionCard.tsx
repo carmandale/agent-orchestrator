@@ -17,7 +17,8 @@ interface SessionCardProps {
 
 const activityIcon: Record<string, string> = {
   active: "\u26A1",
-  idle: "\uD83D\uDCA4",
+  ready: "\uD83D\uDFE2",
+  idle: "\uD83D\uDFE1",
   waiting_input: "\u2753",
   blocked: "\uD83D\uDEA7",
   exited: "\uD83D\uDC80",

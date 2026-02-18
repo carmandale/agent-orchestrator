@@ -44,7 +44,8 @@ export type SessionStatus =
 /** Activity state as detected by the agent plugin */
 export type ActivityState =
   | "active" // agent is processing (thinking, writing code)
-  | "idle" // agent is at prompt, waiting for input
+  | "ready" // agent finished its turn, process alive, waiting for input (recent)
+  | "idle" // agent process alive but no activity for >5 minutes (stale)
   | "waiting_input" // agent is asking a question / permission prompt
   | "blocked" // agent hit an error or is stuck
   | "exited"; // agent process is no longer running
@@ -52,6 +53,7 @@ export type ActivityState =
 /** Activity state constants */
 export const ACTIVITY_STATE = {
   ACTIVE: "active" as const,
+  READY: "ready" as const,
   IDLE: "idle" as const,
   WAITING_INPUT: "waiting_input" as const,
   BLOCKED: "blocked" as const,

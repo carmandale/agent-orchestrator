@@ -114,7 +114,7 @@ async function gatherSessionInfo(
     // Detect activity from agent's last message type
     const msgType = introspection?.lastMessageType;
     if (msgType === "summary" || msgType === "assistant" || msgType === "result") {
-      activity = "idle";
+      activity = "ready";
     } else if (msgType === "tool_use" || msgType === "user") {
       activity = "active";
     }
@@ -126,7 +126,7 @@ async function gatherSessionInfo(
   if (activity === null && status) {
     const statusToActivity: Record<string, ActivityState> = {
       working: "active",
-      idle: "idle",
+      idle: "ready",
       stuck: "blocked",
       errored: "blocked",
     };

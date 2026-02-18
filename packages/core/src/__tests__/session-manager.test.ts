@@ -458,8 +458,8 @@ describe("list", () => {
     const sm = createSessionManager({ config, registry: registryWithError });
     const sessions = await sm.list();
 
-    // Should fall back to idle when getActivityState fails
-    expect(sessions[0].activity).toBe("idle");
+    // Should fall back to ready when getActivityState fails (runtime is alive)
+    expect(sessions[0].activity).toBe("ready");
   });
 });
 
