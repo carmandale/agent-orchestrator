@@ -34,7 +34,9 @@ import {
   type ProjectConfig as _ProjectConfig,
 } from "./types.js";
 import { updateMetadata } from "./metadata.js";
-import { getSessionsDir } from "./paths.js";
+import { getSessionsDir, getRetrospectivesDir } from "./paths.js";
+import { LogWriter, type LogEntry } from "./log-writer.js";
+import { generateRetrospective, saveRetrospective } from "./retrospective.js";
 
 /** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
 function parseDuration(str: string): number {
@@ -160,6 +162,7 @@ export interface LifecycleManagerDeps {
   config: OrchestratorConfig;
   registry: PluginRegistry;
   sessionManager: SessionManager;
+  logDir?: string;
 }
 
 /** Track attempt counts for reactions per session. */
@@ -171,6 +174,16 @@ interface ReactionTracker {
 /** Create a LifecycleManager instance. */
 export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleManager {
   const { config, registry, sessionManager } = deps;
+
+  // Initialize event log writer if logDir is provided
+  let eventLogWriter: LogWriter | null = null;
+  if (deps.logDir) {
+    eventLogWriter = new LogWriter({
+      filePath: `${deps.logDir}/events.jsonl`,
+      maxSizeBytes: 10 * 1024 * 1024, // 10MB
+      maxBackups: 3,
+    });
+  }
 
   const states = new Map<SessionId, SessionStatus>();
   const reactionTrackers = new Map<string, ReactionTracker>(); // "sessionId:reactionKey"
@@ -447,6 +460,37 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         }
       }
 
+      // Persist event to log file
+      if (eventLogWriter) {
+        const logEntry: LogEntry = {
+          ts: new Date().toISOString(),
+          level: "info",
+          source: "lifecycle",
+          sessionId: session.id,
+          message: `${session.id}: ${oldStatus} → ${newStatus}`,
+          data: { type: statusToEventType(oldStatus, newStatus), oldStatus, newStatus },
+        };
+        eventLogWriter.append(logEntry);
+      }
+
+      // Generate retrospective for terminal states
+      if (newStatus === "merged" || newStatus === "killed") {
+        void (async () => {
+          try {
+            const retro = generateRetrospective(session.id, config, session.projectId);
+            if (retro) {
+              const project = config.projects[session.projectId];
+              if (project) {
+                const retroDir = getRetrospectivesDir(config.configPath, project.path);
+                saveRetrospective(retro, retroDir);
+              }
+            }
+          } catch {
+            // Fire-and-forget — don't crash the lifecycle loop
+          }
+        })();
+      }
+
       // Handle transition: notify humans and/or trigger reactions
       const eventType = statusToEventType(oldStatus, newStatus);
       if (eventType) {
@@ -571,6 +615,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
+      }
+      if (eventLogWriter) {
+        eventLogWriter.close();
       }
     },
 

@@ -72,6 +72,8 @@ export {
   getSessionsDir,
   getWorktreesDir,
   getArchiveDir,
+  getLogsDir,
+  getRetrospectivesDir,
   getOriginFilePath,
   generateSessionName,
   generateTmuxName,
@@ -79,3 +81,19 @@ export {
   expandHome,
   validateAndStoreOrigin,
 } from "./paths.js";
+
+// Log writer — JSONL structured logging with rotation
+export { LogWriter } from "./log-writer.js";
+export type { LogEntry, LogWriterOptions } from "./log-writer.js";
+
+// Log reader — query and filter JSONL logs
+export { readLogs, readLogsFromDir, tailLogs } from "./log-reader.js";
+export type { LogQueryOptions } from "./log-reader.js";
+
+// Session report card — per-session metrics
+export { generateReportCard } from "./session-report-card.js";
+export type { SessionReportCard } from "./session-report-card.js";
+
+// Retrospective — session analysis
+export { generateRetrospective, saveRetrospective, loadRetrospectives } from "./retrospective.js";
+export type { Retrospective } from "./retrospective.js";

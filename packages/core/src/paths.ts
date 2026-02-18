@@ -111,6 +111,22 @@ export function getArchiveDir(configPath: string, projectPath: string): string {
 }
 
 /**
+ * Get the logs directory for a project.
+ * Format: ~/.agent-orchestrator/{hash}-{projectId}/logs
+ */
+export function getLogsDir(configPath: string, projectPath: string): string {
+  return join(getProjectBaseDir(configPath, projectPath), "logs");
+}
+
+/**
+ * Get the retrospectives directory for a project.
+ * Format: ~/.agent-orchestrator/{hash}-{projectId}/retrospectives
+ */
+export function getRetrospectivesDir(configPath: string, projectPath: string): string {
+  return join(getProjectBaseDir(configPath, projectPath), "retrospectives");
+}
+
+/**
  * Get the .origin file path for a project.
  * This file stores the config path for collision detection.
  */
