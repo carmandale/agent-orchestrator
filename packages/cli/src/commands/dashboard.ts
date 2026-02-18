@@ -10,7 +10,7 @@
 
 import { spawn } from "node:child_process";
 import { resolve, join } from "node:path";
-import { existsSync, statSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import chalk from "chalk";
 import type { Command } from "commander";
 import {
@@ -20,6 +20,9 @@ import {
   tailLogs,
   restartDashboard,
   waitForHealthy,
+  readPidFile,
+  writePidFile,
+  removePidFile,
   type LogEntry,
   type LogQueryOptions,
 } from "@composio/ao-core";
@@ -39,45 +42,6 @@ function resolveLogDir(): string | null {
     return resolveLogDirStrict();
   } catch {
     return null;
-  }
-}
-
-/** Read the PID from the dashboard.pid file, verify it's still running. */
-function readDashboardPid(logDir: string): number | null {
-  const pidFile = join(logDir, "dashboard.pid");
-  if (!existsSync(pidFile)) return null;
-
-  try {
-    const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-    if (isNaN(pid)) return null;
-
-    // Check if process is still alive
-    process.kill(pid, 0); // signal 0 = test if process exists
-    return pid;
-  } catch {
-    // Process doesn't exist — clean up stale PID file
-    try {
-      unlinkSync(pidFile);
-    } catch {
-      // best effort
-    }
-    return null;
-  }
-}
-
-/** Write dashboard PID to file. */
-function writeDashboardPid(logDir: string, pid: number): void {
-  const pidFile = join(logDir, "dashboard.pid");
-  writeFileSync(pidFile, String(pid), "utf-8");
-}
-
-/** Clean up dashboard PID file. */
-function removeDashboardPid(logDir: string): void {
-  const pidFile = join(logDir, "dashboard.pid");
-  try {
-    if (existsSync(pidFile)) unlinkSync(pidFile);
-  } catch {
-    // best effort
   }
 }
 
@@ -164,7 +128,7 @@ async function startDashboardProcess(
 
   // Write PID file for process tracking
   if (logDir && child.pid) {
-    writeDashboardPid(logDir, child.pid);
+    writePidFile(logDir, child.pid);
   }
 
   const stderrChunks: string[] = [];
@@ -210,7 +174,7 @@ async function startDashboardProcess(
   child.on("exit", (code) => {
     if (browserTimer) clearTimeout(browserTimer);
     if (logWriter) logWriter.close();
-    if (logDir) removeDashboardPid(logDir);
+    if (logDir) removePidFile(logDir);
 
     if (code !== 0 && code !== null) {
       const stderr = stderrChunks.join("");
@@ -273,7 +237,7 @@ export function registerDashboard(program: Command): void {
           // Process already exited
         }
         await waitForPortFree(port, 5000);
-        if (logDir) removeDashboardPid(logDir);
+        if (logDir) removePidFile(logDir);
       }
 
       await cleanNextCache(targetWebDir);
@@ -375,7 +339,7 @@ export function registerDashboard(program: Command): void {
 
         // Check PID file
         if (logDir) {
-          const filePid = readDashboardPid(logDir);
+          const filePid = readPidFile(logDir);
           if (filePid) {
             pid = String(filePid);
             pidSource = "pid file";
@@ -403,7 +367,7 @@ export function registerDashboard(program: Command): void {
           console.log(
             `  Process:  ${chalk.yellow("stale")} (PID file exists but port ${port} is free)`,
           );
-          if (logDir) removeDashboardPid(logDir);
+          if (logDir) removePidFile(logDir);
           running = false;
           pid = null;
         }

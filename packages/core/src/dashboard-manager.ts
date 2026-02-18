@@ -62,7 +62,7 @@ async function findPidOnPort(port: number): Promise<number | null> {
 }
 
 /** Read PID from dashboard.pid file, verify it's alive. */
-function readPidFile(logDir: string): number | null {
+export function readPidFile(logDir: string): number | null {
   const pidFile = join(logDir, "dashboard.pid");
   if (!existsSync(pidFile)) return null;
 
@@ -79,12 +79,12 @@ function readPidFile(logDir: string): number | null {
 }
 
 /** Write PID to dashboard.pid. */
-function writePidFile(logDir: string, pid: number): void {
+export function writePidFile(logDir: string, pid: number): void {
   writeFileSync(join(logDir, "dashboard.pid"), String(pid), "utf-8");
 }
 
 /** Remove dashboard.pid. */
-function removePidFile(logDir: string): void {
+export function removePidFile(logDir: string): void {
   try {
     const f = join(logDir, "dashboard.pid");
     if (existsSync(f)) unlinkSync(f);

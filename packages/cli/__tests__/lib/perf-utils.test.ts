@@ -12,8 +12,7 @@ vi.mock("@composio/ao-core", () => ({
   readLogsFromDir: mockReadLogsFromDir,
 }));
 
-import { resolveLogDir, loadRequests } from "../../src/lib/perf-utils.js";
-import type { ParsedRequest } from "../../src/lib/perf-utils.js";
+import { resolveLogDir, loadRequests, type ParsedRequest } from "../../src/lib/perf-utils.js";
 
 beforeEach(() => {
   mockLoadConfig.mockReset();

@@ -98,5 +98,5 @@ export { generateReportCard } from "./session-report-card.js";
 export { generateRetrospective, saveRetrospective, loadRetrospectives, JsonlRetrospectiveStore } from "./retrospective.js";
 
 // Dashboard manager — programmatic dashboard process control
-export { restartDashboard, waitForHealthy, getDashboardStatus, stopDashboard } from "./dashboard-manager.js";
+export { restartDashboard, waitForHealthy, getDashboardStatus, stopDashboard, readPidFile, writePidFile, removePidFile } from "./dashboard-manager.js";
 export type { DashboardRestartOpts, DashboardRestartResult } from "./dashboard-manager.js";
