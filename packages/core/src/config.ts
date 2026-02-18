@@ -250,7 +250,10 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
       action: "send-to-agent",
       message: "Your branch has merge conflicts. Rebase on the default branch and resolve them.",
       escalateAfter: "15m",
-      retriggerAfter: "10m",
+      // Note: retriggerAfter is intentionally omitted here. checkPersistentConditions
+      // requires a session status in RETRIGGER_STATES, but there is no merge_conflicts
+      // SessionStatus yet — determineStatus never produces one. Adding retriggerAfter
+      // without the backing status would be dead config that could never fire.
     },
     "approved-and-green": {
       auto: false,
