@@ -96,8 +96,8 @@ export const TERMINAL_STATUSES: ReadonlySet<SessionStatus> = new Set([
 /** Activity states that indicate the session is no longer running. */
 export const TERMINAL_ACTIVITIES: ReadonlySet<ActivityState> = new Set(["exited"]);
 
-/** Statuses that must never be restored (e.g. already merged, actively working). */
-export const NON_RESTORABLE_STATUSES: ReadonlySet<SessionStatus> = new Set(["merged", "working"]);
+/** Statuses that must never be restored (e.g. already merged). */
+export const NON_RESTORABLE_STATUSES: ReadonlySet<SessionStatus> = new Set(["merged"]);
 
 /** Check if a session is in a terminal (dead) state. */
 export function isTerminalSession(session: {
