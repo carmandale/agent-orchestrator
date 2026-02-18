@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { dirname, basename, join } from "node:path";
 import { homedir } from "node:os";
 import { realpathSync, existsSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import type { OrchestratorConfig } from "./types.js";
 
 /**
  * Generate a 12-character hash from a config directory path.
@@ -124,6 +125,26 @@ export function getLogsDir(configPath: string, projectPath: string): string {
  */
 export function getRetrospectivesDir(configPath: string, projectPath: string): string {
   return join(getProjectBaseDir(configPath, projectPath), "retrospectives");
+}
+
+/**
+ * Resolve the log directory for the first configured project.
+ * Returns null if no projects are configured.
+ */
+export function resolveProjectLogDir(config: OrchestratorConfig): string | null {
+  const projectId = Object.keys(config.projects)[0];
+  if (!projectId) return null;
+  return getLogsDir(config.configPath, config.projects[projectId].path);
+}
+
+/**
+ * Resolve the retrospectives directory for the first configured project.
+ * Returns null if no projects are configured.
+ */
+export function resolveProjectRetroDir(config: OrchestratorConfig): string | null {
+  const projectId = Object.keys(config.projects)[0];
+  if (!projectId) return null;
+  return getRetrospectivesDir(config.configPath, config.projects[projectId].path);
 }
 
 /**

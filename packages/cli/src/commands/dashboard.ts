@@ -15,7 +15,7 @@ import chalk from "chalk";
 import type { Command } from "commander";
 import {
   loadConfig,
-  getLogsDir,
+  resolveProjectLogDir,
   LogWriter,
   readLogs,
   tailLogs,
@@ -33,14 +33,9 @@ import {
 } from "../lib/dashboard-rebuild.js";
 import { formatAge, parseSinceArg } from "../lib/format.js";
 
-/** Resolve the log directory for the first configured project. */
 function resolveLogDir(): string | null {
   try {
-    const config = loadConfig();
-    const projectId = Object.keys(config.projects)[0];
-    if (!projectId) return null;
-    const project = config.projects[projectId];
-    return getLogsDir(config.configPath, project.path);
+    return resolveProjectLogDir(loadConfig());
   } catch {
     return null;
   }

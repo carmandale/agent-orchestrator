@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
-import { getLogsDir, readLogsFromDir, loadConfig } from "@composio/ao-core";
+import { resolveProjectLogDir, readLogsFromDir, loadConfig } from "@composio/ao-core";
 
 function resolveLogDir(): string {
-  const config = loadConfig();
-  const projectId = Object.keys(config.projects)[0];
-  if (!projectId) throw new Error("No projects configured.");
-  const project = config.projects[projectId];
-  return getLogsDir(config.configPath, project.path);
+  const dir = resolveProjectLogDir(loadConfig());
+  if (!dir) throw new Error("No projects configured.");
+  return dir;
 }
 
 function percentile(sorted: number[], p: number): number {

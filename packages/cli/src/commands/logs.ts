@@ -12,7 +12,7 @@ import chalk from "chalk";
 import type { Command } from "commander";
 import {
   loadConfig,
-  getLogsDir,
+  resolveProjectLogDir,
   readLogs,
   readLogsFromDir,
   tailLogs,
@@ -40,13 +40,11 @@ function colorLevel(level: LogEntry["level"]): string {
   }
 }
 
-/** Resolve log directory from config, first project. */
 function resolveLogDir(): string {
   const config = loadConfig();
-  const projectId = Object.keys(config.projects)[0];
-  if (!projectId) throw new Error("No projects configured.");
-  const project = config.projects[projectId];
-  return getLogsDir(config.configPath, project.path);
+  const dir = resolveProjectLogDir(config);
+  if (!dir) throw new Error("No projects configured.");
+  return dir;
 }
 
 export function registerLogs(program: Command): void {

@@ -11,15 +11,14 @@
 
 import chalk from "chalk";
 import type { Command } from "commander";
-import { loadConfig, getLogsDir, readLogsFromDir } from "@composio/ao-core";
+import { loadConfig, resolveProjectLogDir, readLogsFromDir } from "@composio/ao-core";
 import { padCol, parseSinceArg } from "../lib/format.js";
 
 function resolveLogDir(): string {
   const config = loadConfig();
-  const projectId = Object.keys(config.projects)[0];
-  if (!projectId) throw new Error("No projects configured.");
-  const project = config.projects[projectId];
-  return getLogsDir(config.configPath, project.path);
+  const dir = resolveProjectLogDir(config);
+  if (!dir) throw new Error("No projects configured.");
+  return dir;
 }
 
 interface ParsedRequest {

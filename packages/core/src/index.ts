@@ -74,6 +74,8 @@ export {
   getArchiveDir,
   getLogsDir,
   getRetrospectivesDir,
+  resolveProjectLogDir,
+  resolveProjectRetroDir,
   getOriginFilePath,
   generateSessionName,
   generateTmuxName,

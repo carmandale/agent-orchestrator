@@ -11,7 +11,7 @@ import chalk from "chalk";
 import type { Command } from "commander";
 import {
   loadConfig,
-  getRetrospectivesDir,
+  resolveProjectRetroDir,
   loadRetrospectives,
   generateRetrospective,
   saveRetrospective,
@@ -20,10 +20,9 @@ import {
 
 function resolveRetroDir(): string {
   const config = loadConfig();
-  const projectId = Object.keys(config.projects)[0];
-  if (!projectId) throw new Error("No projects configured.");
-  const project = config.projects[projectId];
-  return getRetrospectivesDir(config.configPath, project.path);
+  const dir = resolveProjectRetroDir(config);
+  if (!dir) throw new Error("No projects configured.");
+  return dir;
 }
 
 function formatDuration(ms: number): string {
