@@ -452,6 +452,81 @@ describe("list", () => {
     expect(sessions[0].activity).toBe("active");
   });
 
+  it("updates lastActivityAt from agent session info", async () => {
+    const recentDate = new Date("2026-02-18T22:42:00Z");
+    const agentWithInfo: Agent = {
+      ...mockAgent,
+      getActivityState: vi.fn().mockResolvedValue("active"),
+      getSessionInfo: vi.fn().mockResolvedValue({
+        summary: "Working on feature X",
+        agentSessionId: "abc123",
+        lastLogModified: recentDate,
+      }),
+    };
+    const registryWithInfo: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return agentWithInfo;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "a",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithInfo });
+    const sessions = await sm.list();
+
+    // lastActivityAt should be updated from agent's JSONL file mtime
+    expect(sessions[0].lastActivityAt).toEqual(recentDate);
+    // agentInfo should be enriched with live data
+    expect(sessions[0].agentInfo?.summary).toBe("Working on feature X");
+    expect(sessions[0].agentInfo?.agentSessionId).toBe("abc123");
+  });
+
+  it("keeps metadata lastActivityAt when agent log is older", async () => {
+    const oldDate = new Date("2020-01-01T00:00:00Z");
+    const agentWithOldInfo: Agent = {
+      ...mockAgent,
+      getActivityState: vi.fn().mockResolvedValue("idle"),
+      getSessionInfo: vi.fn().mockResolvedValue({
+        summary: "Old work",
+        agentSessionId: null,
+        lastLogModified: oldDate,
+      }),
+    };
+    const registryWithOldInfo: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return agentWithOldInfo;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "a",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithOldInfo });
+    const sessions = await sm.list();
+
+    // lastActivityAt should NOT be overwritten with an older date
+    expect(sessions[0].lastActivityAt.getTime()).toBeGreaterThan(oldDate.getTime());
+    // But agentInfo should still be enriched
+    expect(sessions[0].agentInfo?.summary).toBe("Old work");
+  });
+
   it("keeps existing activity when getActivityState throws", async () => {
     const agentWithError: Agent = {
       ...mockAgent,

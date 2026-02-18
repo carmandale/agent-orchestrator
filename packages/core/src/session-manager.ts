@@ -285,6 +285,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       } catch {
         // Can't detect activity — keep existing value
       }
+
+      // Enrich with live agent session info (summary, cost, lastLogModified).
+      // This updates lastActivityAt from the agent's JSONL file mtime, which
+      // reflects actual agent activity rather than the metadata file mtime.
+      try {
+        const info = await plugins.agent.getSessionInfo(session);
+        if (info) {
+          session.agentInfo = info;
+          if (info.lastLogModified && info.lastLogModified > session.lastActivityAt) {
+            session.lastActivityAt = info.lastLogModified;
+          }
+        }
+      } catch {
+        // Can't get session info — keep existing values
+      }
     }
   }
 
