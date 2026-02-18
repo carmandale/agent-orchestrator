@@ -15,8 +15,17 @@ const require = createRequire(import.meta.url);
 /**
  * Build environment variables for spawning the dashboard process.
  * Shared between `ao start` and `ao dashboard` to avoid duplication.
+ *
+ * Terminal server ports default to 3001/3003 but can be overridden via config
+ * to allow multiple dashboard instances to run simultaneously (e.g., different
+ * projects on different ports without EADDRINUSE conflicts).
  */
-export function buildDashboardEnv(port: number, configPath: string | null): Record<string, string> {
+export function buildDashboardEnv(
+  port: number,
+  configPath: string | null,
+  terminalPort?: number,
+  directTerminalPort?: number,
+): Record<string, string> {
   const env: Record<string, string> = { ...process.env } as Record<string, string>;
 
   // Pass config path so dashboard uses the same config as the CLI
@@ -25,9 +34,18 @@ export function buildDashboardEnv(port: number, configPath: string | null): Reco
   }
 
   // Set ports for client-side access (Next.js requires NEXT_PUBLIC_ prefix)
+  // Priority: config value > env var > default
   env["PORT"] = String(port);
-  env["NEXT_PUBLIC_TERMINAL_PORT"] = env["TERMINAL_PORT"] ?? "3001";
-  env["NEXT_PUBLIC_DIRECT_TERMINAL_PORT"] = env["DIRECT_TERMINAL_PORT"] ?? "3003";
+
+  const resolvedTerminalPort = String(terminalPort ?? env["TERMINAL_PORT"] ?? "3001");
+  const resolvedDirectTerminalPort = String(
+    directTerminalPort ?? env["DIRECT_TERMINAL_PORT"] ?? "3003",
+  );
+
+  env["TERMINAL_PORT"] = resolvedTerminalPort;
+  env["DIRECT_TERMINAL_PORT"] = resolvedDirectTerminalPort;
+  env["NEXT_PUBLIC_TERMINAL_PORT"] = resolvedTerminalPort;
+  env["NEXT_PUBLIC_DIRECT_TERMINAL_PORT"] = resolvedDirectTerminalPort;
 
   return env;
 }

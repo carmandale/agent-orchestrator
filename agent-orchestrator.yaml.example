@@ -10,6 +10,10 @@ worktreeDir: ~/.worktrees
 # Web dashboard port
 port: 3000
 
+# Terminal server ports (override to avoid conflicts when running multiple dashboards)
+# terminalPort: 3001
+# directTerminalPort: 3003
+
 # Default plugins (these are the defaults — you can omit this section)
 defaults:
   runtime: tmux           # tmux | process | docker | kubernetes | ssh | e2b
