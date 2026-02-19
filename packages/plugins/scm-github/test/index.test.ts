@@ -753,10 +753,11 @@ describe("scm-github plugin", () => {
       expect(result.ciPassing).toBe(false);
       expect(result.mergeable).toBe(false);
       expect(result.blockers).toContain("CI is failing");
-      expect(result.blockers).toContain("Required checks are failing");
+      // No redundant "Required checks are failing" — the CI section covers it
+      expect(result.blockers).not.toContain("Required checks are failing");
     });
 
-    it("reports UNSTABLE merge state even when CI fetch fails", async () => {
+    it("falls back to CI failing when CI fetch fails with UNSTABLE merge state", async () => {
       mockGh({ state: "OPEN" }); // getPRState
       mockGh({
         mergeable: "MERGEABLE",
@@ -769,8 +770,9 @@ describe("scm-github plugin", () => {
       const result = await scm.getMergeability(pr);
       expect(result.ciPassing).toBe(false);
       expect(result.mergeable).toBe(false);
+      // getCISummary fail-closes to "failing", which the CI section reports
       expect(result.blockers).toContain("CI is failing");
-      expect(result.blockers).toContain("Required checks are failing");
+      expect(result.blockers).not.toContain("Required checks are failing");
     });
 
     it("does not treat UNSTABLE as a blocker when CI is pending", async () => {

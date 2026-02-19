@@ -544,12 +544,14 @@ function createGitHubSCM(): SCM {
       } else if (mergeState === "BLOCKED") {
         blockers.push("Merge is blocked by branch protection");
       } else if (mergeState === "UNSTABLE") {
-        // UNSTABLE means required status checks exist but aren't all passing.
-        // Skip the blocker only when CI is pending (checks still running) —
-        // "Required checks are failing" would be misleading in that case.
-        // For all other ciStatus values (failing, none, passing) fail closed:
-        // GitHub says something's wrong, so report it.
-        if (ciStatus !== CI_STATUS.PENDING) {
+        // UNSTABLE means required status checks aren't all passing — could be
+        // pending or failing.  When !ciPassing the CI section above already
+        // added a specific blocker ("CI is failing" / "CI is pending"), so
+        // adding a second one here would be redundant or misleading.  Only
+        // add the UNSTABLE blocker when ciPassing is true — that's the
+        // fail-closed safety net for edge cases (e.g. all checks skipped but
+        // GitHub still reports UNSTABLE).
+        if (ciPassing) {
           blockers.push("Required checks are failing");
         }
       }
