@@ -7,89 +7,26 @@ const mockTailLogs = vi.fn();
 const mockResolveProjectLogDir = vi.fn();
 const mockLoadConfig = vi.fn();
 const mockLogWriterAppend = vi.fn();
+const mockGetRequestStats = vi.fn();
 
-vi.mock("@composio/ao-core", () => {
-  function percentile(sorted: number[], p: number): number {
-    if (sorted.length === 0) return 0;
-    const idx = Math.ceil((p / 100) * sorted.length) - 1;
-    return sorted[Math.max(0, idx)];
-  }
-  function normalizeRoutePath(path: string): string {
-    return path
-      .replace(/\/sessions\/[^/]+/g, "/sessions/:id")
-      .replace(/\/prs\/[^/]+/g, "/prs/:id");
-  }
-  return {
-    resolveProjectLogDir: (...args: unknown[]) => mockResolveProjectLogDir(...args),
-    readLogsFromDir: (...args: unknown[]) => mockReadLogsFromDir(...args),
-    tailLogs: (...args: unknown[]) => mockTailLogs(...args),
-    loadConfig: (...args: unknown[]) => mockLoadConfig(...args),
-    percentile,
-    normalizeRoutePath,
-    /** Inline implementation of parseApiLogs from core (uses mocked readLogsFromDir). */
-    parseApiLogs: (logDir: string, opts?: { since?: Date; route?: string }) => {
-      const raw = mockReadLogsFromDir(logDir, "api", {
-        source: "api",
-        since: opts?.since,
-      }) as Array<{ ts: string; sessionId?: string | null; data?: Record<string, unknown> }>;
-      const results = [];
-      for (const entry of raw) {
-        const data = entry.data ?? {};
-        if (!data["method"] || !data["path"]) continue;
-        const req = {
-          ts: entry.ts,
-          method: String(data["method"]),
-          path: String(data["path"]),
-          sessionId: entry.sessionId ?? null,
-          statusCode: Number(data["statusCode"]) || 0,
-          durationMs: Number(data["durationMs"]) || 0,
-          error: data["error"] ? String(data["error"]) : undefined,
-          timings: data["timings"] as Record<string, number> | undefined,
-          cacheStats: data["cacheStats"] as { hits: number; misses: number; hitRate: number; size: number } | undefined,
-        };
-        if (opts?.route && !req.path.includes(opts.route)) continue;
-        results.push(req);
-      }
-      return results;
-    },
-    /** Inline implementation of computeApiStats from core. */
-    computeApiStats: (entries: Array<{ method: string; path: string; statusCode: number; durationMs: number; error?: string; cacheStats?: unknown }>) => {
-      const byRoute = new Map<string, typeof entries>();
-      for (const entry of entries) {
-        const key = `${entry.method} ${normalizeRoutePath(entry.path)}`;
-        const arr = byRoute.get(key) ?? [];
-        arr.push(entry);
-        byRoute.set(key, arr);
-      }
-      const routes: Record<string, { count: number; avgMs: number; p50Ms: number; p95Ms: number; p99Ms: number; errors: number }> = {};
-      for (const [route, logs] of byRoute) {
-        const durations = logs.map((l) => l.durationMs).sort((a, b) => a - b);
-        routes[route] = {
-          count: logs.length,
-          avgMs: Math.round(durations.reduce((s, d) => s + d, 0) / durations.length),
-          p50Ms: percentile(durations, 50),
-          p95Ms: percentile(durations, 95),
-          p99Ms: percentile(durations, 99),
-          errors: logs.filter((l) => l.error !== undefined || l.statusCode >= 400).length,
-        };
-      }
-      let latestCacheStats = null;
-      for (let i = entries.length - 1; i >= 0; i--) {
-        if ((entries[i] as { cacheStats?: unknown }).cacheStats) {
-          latestCacheStats = (entries[i] as { cacheStats?: unknown }).cacheStats;
-          break;
-        }
-      }
-      const slowest = [...entries].sort((a, b) => b.durationMs - a.durationMs).slice(0, 10);
-      return { routes, slowest, latestCacheStats };
-    },
-    LogWriter: vi.fn().mockImplementation(() => ({
-      append: mockLogWriterAppend,
-      appendLine: vi.fn(),
-      close: vi.fn(),
-    })),
-  };
-});
+vi.mock("@composio/ao-core", () => ({
+  resolveProjectLogDir: (...args: unknown[]) => mockResolveProjectLogDir(...args),
+  readLogsFromDir: (...args: unknown[]) => mockReadLogsFromDir(...args),
+  tailLogs: (...args: unknown[]) => mockTailLogs(...args),
+  loadConfig: (...args: unknown[]) => mockLoadConfig(...args),
+  LogWriter: vi.fn().mockImplementation(() => ({
+    append: mockLogWriterAppend,
+    appendLine: vi.fn(),
+    close: vi.fn(),
+  })),
+}));
+
+// Mock request-logger.js at the module boundary — perf/route.ts delegates
+// to getRequestStats, so we test the HTTP contract without re-implementing core logic.
+vi.mock("../lib/request-logger.js", () => ({
+  getRequestStats: (...args: unknown[]) => mockGetRequestStats(...args),
+  logApiRequest: vi.fn(),
+}));
 
 // ── Import routes after mocking ─────────────────────────────────────────
 
@@ -103,6 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockLoadConfig.mockReturnValue({});
   mockResolveProjectLogDir.mockReturnValue("/tmp/test-logs");
+  mockGetRequestStats.mockReturnValue({ routes: {}, slowest: [], latestCacheStats: null });
 });
 
 // ── GET /api/logs ───────────────────────────────────────────────────────
@@ -307,134 +245,66 @@ describe("GET /api/logs", () => {
 });
 
 // ── GET /api/perf ───────────────────────────────────────────────────────
+//
+// perf/route.ts delegates to getRequestStats (mocked above).
+// These tests verify the HTTP contract: JSON shape, URL param forwarding,
+// totalRequests aggregation, and error handling. Core logic (parseApiLogs,
+// computeApiStats, route normalization) is tested in @composio/ao-core.
 
 describe("GET /api/perf", () => {
-  const perfLogEntries = [
-    {
-      ts: "2026-01-01T00:00:00Z",
-      level: "info",
-      source: "api",
-      sessionId: null,
-      message: "req",
-      data: {
-        method: "GET",
-        path: "/api/sessions",
-        statusCode: 200,
-        durationMs: 150,
+  it("returns 200 with routes, slowest, cacheStats, and totalRequests", async () => {
+    mockGetRequestStats.mockReturnValue({
+      routes: {
+        "GET /api/sessions": { count: 2, avgMs: 200, p50Ms: 150, p95Ms: 500, p99Ms: 800, errors: 0 },
+        "POST /api/spawn": { count: 1, avgMs: 3000, p50Ms: 3000, p95Ms: 3000, p99Ms: 3000, errors: 1 },
       },
-    },
-    {
-      ts: "2026-01-01T00:01:00Z",
-      level: "info",
-      source: "api",
-      sessionId: null,
-      message: "req",
-      data: {
-        method: "GET",
-        path: "/api/sessions",
-        statusCode: 200,
-        durationMs: 250,
-      },
-    },
-    {
-      ts: "2026-01-01T00:02:00Z",
-      level: "info",
-      source: "api",
-      sessionId: null,
-      message: "req",
-      data: {
-        method: "POST",
-        path: "/api/spawn",
-        statusCode: 500,
-        durationMs: 3000,
-        error: "fail",
-      },
-    },
-  ];
-
-  it("returns route stats with count, avgMs, p50Ms, etc.", async () => {
-    mockReadLogsFromDir.mockReturnValue(perfLogEntries);
+      slowest: [
+        { method: "POST", path: "/api/spawn", durationMs: 3000 },
+        { method: "GET", path: "/api/sessions", durationMs: 250 },
+      ],
+      latestCacheStats: { hits: 10, misses: 2, hitRate: 0.83, size: 12 },
+    });
 
     const req = new Request("http://localhost:3000/api/perf");
     const res = await perfGET(req);
     expect(res.status).toBe(200);
 
     const json = await res.json();
-    expect(json.routes).toBeDefined();
-    expect(json.totalRequests).toBe(3);
-
-    // Two GET /api/sessions entries -> normalized to "GET /api/sessions"
-    const sessionRoute = json.routes["GET /api/sessions"];
-    expect(sessionRoute).toBeDefined();
-    expect(sessionRoute.count).toBe(2);
-    expect(sessionRoute.avgMs).toBe(200); // (150 + 250) / 2
-    expect(sessionRoute.p50Ms).toBeDefined();
-    expect(sessionRoute.p95Ms).toBeDefined();
-    expect(sessionRoute.p99Ms).toBeDefined();
-    expect(sessionRoute.errors).toBe(0);
-
-    // One POST /api/spawn with statusCode 500 and error
-    const spawnRoute = json.routes["POST /api/spawn"];
-    expect(spawnRoute).toBeDefined();
-    expect(spawnRoute.count).toBe(1);
-    expect(spawnRoute.avgMs).toBe(3000);
-    expect(spawnRoute.errors).toBe(1);
+    expect(json.routes["GET /api/sessions"].count).toBe(2);
+    expect(json.routes["POST /api/spawn"].errors).toBe(1);
+    expect(json.slowest).toHaveLength(2);
+    expect(json.cacheStats).toEqual({ hits: 10, misses: 2, hitRate: 0.83, size: 12 });
+    expect(json.totalRequests).toBe(3); // 2 + 1
   });
 
-  it("returns slowest requests sorted by duration", async () => {
-    mockReadLogsFromDir.mockReturnValue(perfLogEntries);
+  it("computes totalRequests as sum of all route counts", async () => {
+    mockGetRequestStats.mockReturnValue({
+      routes: {
+        "GET /api/sessions": { count: 5, avgMs: 100, p50Ms: 90, p95Ms: 200, p99Ms: 300, errors: 0 },
+        "GET /api/sessions/:id": { count: 3, avgMs: 50, p50Ms: 45, p95Ms: 80, p99Ms: 100, errors: 0 },
+        "POST /api/spawn": { count: 2, avgMs: 2000, p50Ms: 1800, p95Ms: 3000, p99Ms: 3000, errors: 1 },
+      },
+      slowest: [],
+      latestCacheStats: null,
+    });
 
     const req = new Request("http://localhost:3000/api/perf");
     const res = await perfGET(req);
     const json = await res.json();
-
-    expect(json.slowest).toBeDefined();
-    expect(Array.isArray(json.slowest)).toBe(true);
-    expect(json.slowest.length).toBe(3);
-    // Sorted descending by duration
-    expect(json.slowest[0].durationMs).toBe(3000);
-    expect(json.slowest[1].durationMs).toBe(250);
-    expect(json.slowest[2].durationMs).toBe(150);
+    expect(json.totalRequests).toBe(10); // 5 + 3 + 2
   });
 
-  it("normalizes route paths for grouping", async () => {
-    mockReadLogsFromDir.mockReturnValue([
-      {
-        ts: "2026-01-01T00:00:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: {
-          method: "GET",
-          path: "/api/sessions/backend-3",
-          statusCode: 200,
-          durationMs: 100,
-        },
-      },
-      {
-        ts: "2026-01-01T00:01:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: {
-          method: "GET",
-          path: "/api/sessions/frontend-1",
-          statusCode: 200,
-          durationMs: 200,
-        },
-      },
-    ]);
-
+  it("returns empty stats shape when getRequestStats returns nothing", async () => {
+    // default beforeEach mock already returns empty stats
     const req = new Request("http://localhost:3000/api/perf");
     const res = await perfGET(req);
-    const json = await res.json();
+    expect(res.status).toBe(200);
 
-    // Both should be grouped under the normalized key
-    const normalized = json.routes["GET /api/sessions/:id"];
-    expect(normalized).toBeDefined();
-    expect(normalized.count).toBe(2);
+    const json = await res.json();
+    expect(json.routes).toEqual({});
+    expect(json.slowest).toEqual([]);
+    expect(json.cacheStats).toBeNull();
+    expect(json.totalRequests).toBe(0);
   });
 
   it("returns 500 when no projects configured", async () => {
@@ -448,220 +318,34 @@ describe("GET /api/perf", () => {
     expect(json.error).toMatch(/No projects configured/);
   });
 
-  it("passes since parameter as Date to readLogsFromDir", async () => {
-    mockReadLogsFromDir.mockReturnValue([]);
-
-    const req = new Request(
-      "http://localhost:3000/api/perf?since=2026-02-01T12:00:00Z",
-    );
+  it("forwards since param as Date to getRequestStats", async () => {
+    const req = new Request("http://localhost:3000/api/perf?since=2026-02-01T12:00:00Z");
     await perfGET(req);
 
-    expect(mockReadLogsFromDir).toHaveBeenCalledWith(
+    expect(mockGetRequestStats).toHaveBeenCalledWith(
       "/tmp/test-logs",
-      "api",
-      expect.objectContaining({
-        source: "api",
-        since: new Date("2026-02-01T12:00:00Z"),
-      }),
+      expect.objectContaining({ since: new Date("2026-02-01T12:00:00Z") }),
     );
   });
 
-  it("filters entries by route parameter using path.includes", async () => {
-    mockReadLogsFromDir.mockReturnValue([
-      {
-        ts: "2026-01-01T00:00:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: { method: "GET", path: "/api/sessions", statusCode: 200, durationMs: 100 },
-      },
-      {
-        ts: "2026-01-01T00:01:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: { method: "POST", path: "/api/spawn", statusCode: 200, durationMs: 200 },
-      },
-      {
-        ts: "2026-01-01T00:02:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: { method: "GET", path: "/api/sessions/s-1", statusCode: 200, durationMs: 150 },
-      },
-    ]);
-
+  it("forwards route param to getRequestStats", async () => {
     const req = new Request("http://localhost:3000/api/perf?route=sessions");
-    const res = await perfGET(req);
-    const json = await res.json();
+    await perfGET(req);
 
-    // Only entries whose path includes "sessions" should appear
-    expect(json.totalRequests).toBe(2); // 2 session entries passed route filter
-    // Routes should only contain session-related entries
-    expect(json.routes["POST /api/spawn"]).toBeUndefined();
-    expect(json.routes["GET /api/sessions"]).toBeDefined();
-    expect(json.routes["GET /api/sessions/:id"]).toBeDefined();
-  });
-
-  it("returns zeroed stats when no log entries exist", async () => {
-    mockReadLogsFromDir.mockReturnValue([]);
-
-    const req = new Request("http://localhost:3000/api/perf");
-    const res = await perfGET(req);
-    expect(res.status).toBe(200);
-
-    const json = await res.json();
-    expect(json.routes).toEqual({});
-    expect(json.slowest).toEqual([]);
-    expect(json.cacheStats).toBeNull();
-    expect(json.totalRequests).toBe(0);
-  });
-
-  it("returns latestCacheStats from the most recent entry with cacheStats", async () => {
-    mockReadLogsFromDir.mockReturnValue([
-      {
-        ts: "2026-01-01T00:00:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: {
-          method: "GET",
-          path: "/api/sessions",
-          statusCode: 200,
-          durationMs: 100,
-          cacheStats: { hits: 5, misses: 2 },
-        },
-      },
-      {
-        ts: "2026-01-01T00:01:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: {
-          method: "GET",
-          path: "/api/sessions",
-          statusCode: 200,
-          durationMs: 120,
-          cacheStats: { hits: 10, misses: 3 },
-        },
-      },
-      {
-        ts: "2026-01-01T00:02:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: {
-          method: "GET",
-          path: "/api/sessions",
-          statusCode: 200,
-          durationMs: 80,
-          // no cacheStats in this entry
-        },
-      },
-    ]);
-
-    const req = new Request("http://localhost:3000/api/perf");
-    const res = await perfGET(req);
-    const json = await res.json();
-
-    // Should be the last entry that had cacheStats (the second one)
-    expect(json.cacheStats).toEqual({ hits: 10, misses: 3 });
-  });
-
-  it("skips entries with missing method or path fields", async () => {
-    mockReadLogsFromDir.mockReturnValue([
-      {
-        ts: "2026-01-01T00:00:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: { path: "/api/sessions", statusCode: 200, durationMs: 100 },
-        // missing method
-      },
-      {
-        ts: "2026-01-01T00:01:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: { method: "GET", statusCode: 200, durationMs: 200 },
-        // missing path
-      },
-      {
-        ts: "2026-01-01T00:02:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: {},
-        // missing both
-      },
-      {
-        ts: "2026-01-01T00:03:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        // no data field at all (data will be undefined, ?? {} makes it {})
-      },
-    ]);
-
-    const req = new Request("http://localhost:3000/api/perf");
-    const res = await perfGET(req);
-    const json = await res.json();
-
-    // All entries should be skipped — no routes recorded
-    expect(json.routes).toEqual({});
-    expect(json.slowest).toEqual([]);
-    expect(json.totalRequests).toBe(0); // 0 valid entries parsed
-  });
-
-  it("applies combined since + route filtering", async () => {
-    mockReadLogsFromDir.mockReturnValue([
-      {
-        ts: "2026-02-01T10:00:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: { method: "GET", path: "/api/sessions", statusCode: 200, durationMs: 100 },
-      },
-      {
-        ts: "2026-02-01T11:00:00Z",
-        level: "info",
-        source: "api",
-        sessionId: null,
-        message: "req",
-        data: { method: "POST", path: "/api/spawn", statusCode: 200, durationMs: 300 },
-      },
-    ]);
-
-    const req = new Request(
-      "http://localhost:3000/api/perf?since=2026-02-01T00:00:00Z&route=spawn",
-    );
-    const res = await perfGET(req);
-    const json = await res.json();
-
-    // since is passed to readLogsFromDir
-    expect(mockReadLogsFromDir).toHaveBeenCalledWith(
+    expect(mockGetRequestStats).toHaveBeenCalledWith(
       "/tmp/test-logs",
-      "api",
-      expect.objectContaining({
-        since: new Date("2026-02-01T00:00:00Z"),
-      }),
+      expect.objectContaining({ route: "sessions" }),
     );
+  });
 
-    // route filtering happens in-memory — only spawn should appear in routes
-    expect(json.routes["POST /api/spawn"]).toBeDefined();
-    expect(json.routes["POST /api/spawn"].count).toBe(1);
-    expect(json.routes["GET /api/sessions"]).toBeUndefined();
+  it("passes both since and route when both provided", async () => {
+    const req = new Request("http://localhost:3000/api/perf?since=2026-01-01T00:00:00Z&route=spawn");
+    await perfGET(req);
+
+    expect(mockGetRequestStats).toHaveBeenCalledWith(
+      "/tmp/test-logs",
+      { since: new Date("2026-01-01T00:00:00Z"), route: "spawn" },
+    );
   });
 });
 

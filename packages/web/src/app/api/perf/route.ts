@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveProjectLogDir, loadConfig } from "@composio/ao-core";
-import { getRequestStats } from "../../../lib/request-logger.js";
+import { getRequestStats } from "@/lib/request-logger";
 
 function resolveLogDir(): string {
   const dir = resolveProjectLogDir(loadConfig());
