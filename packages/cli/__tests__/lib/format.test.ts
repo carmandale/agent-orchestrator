@@ -255,6 +255,7 @@ describe("padCol", () => {
     const result = padCol(colored, 10);
     // Visible content is "green" (5 chars) + 5 spaces = 10 visible chars
     // But actual string is longer due to ANSI codes
+    // eslint-disable-next-line no-control-regex
     const stripped = result.replace(/\u001b\[[0-9;]*m/g, "");
     expect(stripped.length).toBe(10);
   });
