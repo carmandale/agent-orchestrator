@@ -10,7 +10,7 @@ cd agent-orchestrator && bash scripts/setup.sh
 cd ~/your-project && ao init --auto && ao start
 ```
 
-Dashboard opens at http://localhost:3000 (port configurable via `port:` in config)
+Dashboard opens at http://localhost:4100
 
 ## Overview
 
@@ -99,8 +99,8 @@ ao spawn my-project
 # Command-line dashboard
 ao status
 
-# Web dashboard (default port 3000, configurable in agent-orchestrator.yaml)
-open http://localhost:3000
+# Web dashboard
+ao dashboard
 ```
 
 ### Manage Sessions
