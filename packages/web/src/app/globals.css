@@ -1,46 +1,132 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg-primary: #0d1117;
-  --color-bg-secondary: #161b22;
-  --color-bg-tertiary: #1c2128;
-  --color-border-default: #30363d;
-  --color-border-muted: #21262d;
-  --color-border-emphasis: #484f58;
-  --color-text-primary: #e6edf3;
-  --color-text-secondary: #7d8590;
-  --color-text-muted: #484f58;
-  --color-accent-blue: #58a6ff;
-  --color-accent-purple: #bc8cff;
-  --color-accent-green: #3fb950;
-  --color-accent-yellow: #d29922;
-  --color-accent-orange: #d18616;
-  --color-accent-red: #f85149;
-  --color-accent-violet: #a371f7;
-  --font-mono: "SF Mono", "Menlo", "Consolas", monospace;
+  /* ── Base surfaces (background stepping, no shadows in dark mode) ── */
+  --color-bg-base:      #0c0c11;
+  --color-bg-surface:   #141419;
+  --color-bg-elevated:  #1c1c25;
+  --color-bg-subtle:    #23232f;
+
+  /* Backward-compat aliases used by existing components */
+  --color-bg-primary:   var(--color-bg-base);
+  --color-bg-secondary: var(--color-bg-surface);
+  --color-bg-tertiary:  var(--color-bg-elevated);
+
+  /* ── Borders ─────────────────────────────────────────────────────── */
+  --color-border-subtle:   #22222e;
+  --color-border-default:  #2e2e3e;
+  --color-border-strong:   #3e3e52;
+
+  /* Backward-compat aliases */
+  --color-border-muted:    var(--color-border-subtle);
+  --color-border-emphasis: var(--color-border-strong);
+
+  /* ── Text hierarchy (4-tier, modeled on Linear's verified system) ─ */
+  --color-text-primary:   #eeeef5;
+  --color-text-secondary: #8888a6;
+  --color-text-tertiary:  #50506a;
+  --color-text-muted:     #50506a;
+  --color-text-inverse:   #0c0c11;
+
+  /* ── Interactive accent ──────────────────────────────────────────── */
+  --color-accent:         #5b7ef8;
+  --color-accent-hover:   #7b9cfb;
+  --color-accent-subtle:  rgba(91, 126, 248, 0.12);
+
+  /* Aliases used in existing components */
+  --color-accent-blue:    var(--color-accent);
+
+  /* ── Status / semantic colors ────────────────────────────────────── */
+  --color-status-working:   #5b7ef8;
+  --color-status-ready:     #22c55e;
+  --color-status-attention: #f59e0b;
+  --color-status-idle:      #6b6b8a;
+  --color-status-done:      #3e3e54;
+  --color-status-error:     #ef4444;
+
+  /* Semantic aliases used in existing components */
+  --color-accent-green:   var(--color-status-ready);
+  --color-accent-yellow:  var(--color-status-attention);
+  --color-accent-orange:  #d18616;
+  --color-accent-red:     var(--color-status-error);
+  --color-accent-violet:  #a371f7;
+  --color-accent-purple:  #bc8cff;
+
+  /* ── Typography — set via next/font CSS variables in layout.tsx ──── */
+  --font-sans: var(--font-inter), "SF Pro Display", -apple-system, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "SF Mono", "Menlo", "Consolas", monospace;
+
+  /* ── Border radius (from Linear's verified --radius-* tokens) ────── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* ── Transitions (Linear's verified --speed-* values) ───────────── */
+  --transition-quick:   0.1s;
+  --transition-regular: 0.25s;
 }
 
+/* ── Base styles ─────────────────────────────────────────────────────── */
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro", system-ui, sans-serif;
-  background: var(--color-bg-primary);
+  font-family: var(--font-sans);
+  background: var(--color-bg-base);
   color: var(--color-text-primary);
   min-height: 100vh;
+  letter-spacing: -0.011em;
 }
 
 a {
-  color: var(--color-accent-blue);
+  color: var(--color-accent);
   text-decoration: none;
 }
 a:hover {
   text-decoration: underline;
 }
 
+/* ── Scrollbar (thin, barely visible at rest — verified from Linear CSS) ─ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* ── Animations ──────────────────────────────────────────────────────── */
+
+/* Working-state pulse — the ONLY continuous animation */
+@keyframes activity-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(91, 126, 248, 0.45); }
+  50%       { box-shadow: 0 0 0 4px rgba(91, 126, 248, 0); }
+}
+
+/* CI spinner */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Fade-in for opacity states */
 @keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* Card entrance */
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }

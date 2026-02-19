@@ -17,45 +17,38 @@ const zoneConfig: Record<
   AttentionLevel,
   {
     label: string;
-    description: string;
     color: string;
     defaultCollapsed: boolean;
   }
 > = {
   merge: {
-    label: "MERGE",
-    description: "PRs ready to merge",
-    color: "var(--color-accent-green)",
+    label: "Needs Merge",
+    color: "var(--color-status-ready)",
     defaultCollapsed: false,
   },
   respond: {
-    label: "RESPOND",
-    description: "Agents waiting for your input",
-    color: "var(--color-accent-red)",
+    label: "Needs Response",
+    color: "var(--color-status-error)",
     defaultCollapsed: false,
   },
   review: {
-    label: "REVIEW",
-    description: "CI failures, changes requested, conflicts",
+    label: "Review",
     color: "var(--color-accent-orange)",
     defaultCollapsed: false,
   },
   pending: {
-    label: "PENDING",
-    description: "Waiting on reviewer or CI",
-    color: "var(--color-accent-yellow)",
+    label: "Pending",
+    color: "var(--color-status-attention)",
     defaultCollapsed: false,
   },
   working: {
-    label: "WORKING",
-    description: "Agents working normally",
-    color: "var(--color-accent-blue)",
+    label: "Working",
+    color: "var(--color-status-working)",
     defaultCollapsed: false,
   },
   done: {
-    label: "DONE",
-    description: "Merged or terminated",
-    color: "var(--color-text-muted)",
+    label: "Done",
+    color: "var(--color-text-tertiary)",
     defaultCollapsed: true,
   },
 };
@@ -74,20 +67,29 @@ export function AttentionZone({
   if (sessions.length === 0) return null;
 
   return (
-    <div className="mb-6">
+    <div className="mb-7">
+      {/* Zone header: [●] LABEL ─────────── [count] [▾] */}
       <button
-        className="mb-2 flex w-full items-center gap-3 px-1 text-left"
+        className="mb-3 flex w-full items-center gap-2 px-1 text-left"
         onClick={() => setCollapsed(!collapsed)}
       >
+        {/* Status dot */}
+        <div
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{ background: config.color }}
+        />
+        {/* Label */}
         <span
-          className="text-xs font-bold uppercase tracking-widest"
+          className="text-[10px] font-bold uppercase tracking-[0.10em]"
           style={{ color: config.color }}
         >
           {config.label}
         </span>
-        <span className="text-xs text-[var(--color-text-muted)]">{config.description}</span>
+        {/* Divider */}
+        <div className="h-px flex-1 bg-[var(--color-border-subtle)]" />
+        {/* Count pill */}
         <span
-          className="ml-auto rounded-full px-2 py-0.5 text-xs font-bold"
+          className="rounded-full px-2 py-0.5 text-[11px] font-semibold"
           style={{
             color: config.color,
             background: `color-mix(in srgb, ${config.color} 10%, transparent)`,
@@ -95,13 +97,21 @@ export function AttentionZone({
         >
           {sessions.length}
         </span>
-        <span className="text-xs text-[var(--color-text-muted)]">
-          {collapsed ? "\u25B6" : "\u25BC"}
-        </span>
+        {/* Collapse chevron */}
+        <svg
+          className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform duration-150"
+          style={{ transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)" }}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          viewBox="0 0 24 24"
+        >
+          <path d="M19 9l-7 7-7-7" />
+        </svg>
       </button>
 
       {!collapsed && (
-        <div className="space-y-2">
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
           {sessions.map((session) => (
             <SessionCard
               key={session.id}

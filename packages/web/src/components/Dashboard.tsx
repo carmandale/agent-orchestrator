@@ -65,7 +65,6 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
   };
 
   const handleMerge = async (prNumber: number) => {
-    if (!confirm(`Merge PR #${prNumber}?`)) return;
     const res = await fetch(`/api/prs/${prNumber}/merge`, { method: "POST" });
     if (!res.ok) {
       console.error(`Failed to merge PR #${prNumber}:`, await res.text());
@@ -86,17 +85,18 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
     <div className="mx-auto max-w-[1100px] px-8 py-8">
       <DynamicFavicon sessions={sessions} projectName={projectName} />
       {/* Header */}
-      <div className="mb-7 flex items-baseline justify-between">
-        <h1 className="text-[22px] font-semibold tracking-tight">
-          <span className="text-[#7c8aff]">Agent</span> Orchestrator
+      <div className="mb-7 flex items-center justify-between">
+        <h1 className="text-[20px] font-semibold tracking-[-0.02em]">
+          <span className="text-[var(--color-accent)]">Agent</span>{" "}
+          <span className="text-[var(--color-text-primary)]">Orchestrator</span>
         </h1>
-        <div className="flex items-baseline gap-4">
+        <div className="flex items-center gap-3">
           {orchestratorId && (
             <a
               href={`/sessions/${encodeURIComponent(orchestratorId)}`}
-              className="rounded-md border border-[var(--color-border-default)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-blue)] hover:text-[var(--color-accent-blue)]"
+              className="rounded border border-[var(--color-border-default)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] hover:no-underline"
             >
-              orchestrator terminal
+              orchestrator →
             </a>
           )}
           <ClientTimestamp />
@@ -104,18 +104,15 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
       </div>
 
       {/* Stats bar */}
-      <div className="mb-9 flex gap-8 px-1">
-        <Stat value={stats.totalSessions} label="sessions" color="var(--color-accent-blue)" />
-        <Stat value={stats.workingSessions} label="working" color="var(--color-accent-green)" />
+      <div className="mb-8 flex gap-6 px-1">
+        <Stat value={stats.totalSessions} label="sessions" color="var(--color-accent)" />
+        <Stat value={stats.workingSessions} label="working" color="var(--color-status-ready)" />
         <Stat value={stats.openPRs} label="open PRs" color="var(--color-accent-violet)" />
-        <Stat value={stats.needsReview} label="need review" color="var(--color-accent-yellow)" />
+        <Stat value={stats.needsReview} label="need review" color="var(--color-status-attention)" />
       </div>
 
       {/* Attention zones */}
       <div className="mb-9">
-        <h2 className="mb-3 px-1 text-[13px] font-semibold uppercase tracking-widest text-[var(--color-text-muted)]">
-          Sessions
-        </h2>
         {(["merge", "respond", "review", "pending", "working", "done"] as AttentionLevel[]).map(
           (level) => (
             <AttentionZone
@@ -134,10 +131,10 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
       {/* PR Table */}
       {openPRs.length > 0 && (
         <div>
-          <h2 className="mb-3 px-1 text-[13px] font-semibold uppercase tracking-widest text-[var(--color-text-muted)]">
+          <h2 className="mb-3 px-1 text-[10px] font-bold uppercase tracking-[0.10em] text-[var(--color-text-tertiary)]">
             Pull Requests
           </h2>
-          <div className="overflow-hidden rounded-lg border border-[var(--color-border-default)]">
+          <div className="overflow-hidden rounded-[6px] border border-[var(--color-border-default)]">
             <table className="w-full border-collapse">
               <thead>
                 <tr className="border-b border-[var(--color-border-muted)]">
@@ -185,11 +182,11 @@ function ClientTimestamp() {
 
 function Stat({ value, label, color }: { value: number; label: string; color: string }) {
   return (
-    <div className="flex items-baseline gap-2">
-      <span className="text-[28px] font-bold" style={{ color }}>
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-[26px] font-bold leading-none tracking-tight" style={{ color }}>
         {value}
       </span>
-      <span className="text-[13px] text-[var(--color-text-muted)]">{label}</span>
+      <span className="text-[12px] text-[var(--color-text-tertiary)]">{label}</span>
     </div>
   );
 }
