@@ -286,6 +286,33 @@ describe("isAgentProcessRunning", () => {
       };
       expect(await isAgentProcessRunning(handle, "anything")).toBe(true);
     });
+
+    it("returns true when process.kill throws EPERM (process exists, no permission)", async () => {
+      const epermError = Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw epermError;
+      });
+      try {
+        // PID 999 won't actually be checked — the mock throws EPERM
+        const handle = pidHandle(999);
+        expect(await isAgentProcessRunning(handle, "x")).toBe(true);
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
+
+    it("returns false when process.kill throws ESRCH (no such process)", async () => {
+      const esrchError = Object.assign(new Error("no such process"), { code: "ESRCH" });
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw esrchError;
+      });
+      try {
+        const handle = pidHandle(999);
+        expect(await isAgentProcessRunning(handle, "x")).toBe(false);
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
   });
 
   describe("edge cases", () => {
