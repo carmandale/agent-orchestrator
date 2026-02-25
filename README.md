@@ -34,30 +34,6 @@ ao start
 ao spawn my-project 123    # GitHub issue, Linear ticket, or ad-hoc
 ```
 
-### Production-style release pipeline (tf)
-
-```bash
-# TestFlight coordination for the tf project is maintained in:
-# ../GJ-testflight-release/scripts/tf-release-orchestrate
-```
-
-If running from this repo, use the script in `GJ-testflight-release`:
-
-```bash
-cd ../GJ-testflight-release
-scripts/tf-release-orchestrate
-```
-
-Worker issue comments should include these fields for deterministic completion:
-
-```text
-Status: READY
-Build: 1234
-Uploaded: yes
-```
-
-`Status: BLOCKED` may include reason in markdown checklist bullets. Any `READY` status without `Build` and `Uploaded: yes` is treated as blocked by the watcher.
-
 Dashboard opens at `http://localhost:3000`. Run `ao status` for the CLI view.
 
 ## How It Works
