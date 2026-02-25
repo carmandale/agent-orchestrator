@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+
+# Watch a set of GitHub issues and wait until each has posted a terminal status
+# for coordinated preflight/reporting.
+#
+# Usage:
+#   AO_CONFIG_PATH=~/.config/agent-orchestrator/config.yaml \
+#   scripts/tf-coordinator-watch tf 1 2 3 4 5
+# Optional strict schema mode (on by default for tf):
+# AO_TF_STRICT_STATUS=1
+#   Status schema:
+#   Status: READY
+#   Build: 123
+#   Uploaded: yes
+# Optional overrides (defaults work):
+#   AO_REPORT_REPO=owner/repo       # default: carmandale/agent-orchestrator for tf
+#   AO_REPORT_ISSUE=1               # default: 1 for tf
+# 
+
+set -euo pipefail
+
+PROJECT="${1:-}"
+shift || true
+ISSUES=("$@")
+
+if [ -z "$PROJECT" ] || [ "${#ISSUES[@]}" -eq 0 ]; then
+  echo "Usage: $(basename "$0") <project-key> <issue1> [issue2] ..."
+  echo "Example: scripts/tf-coordinator-watch tf 1 2 3 4 5"
+  exit 1
+fi
+
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+  echo "GITHUB_TOKEN is not set. gh commands may fail or be rate-limited."
+fi
+
+if [ -z "${AO_CONFIG_PATH:-}" ]; then
+  AO_CONFIG_PATH="$HOME/.config/agent-orchestrator/config.yaml"
+fi
+
+STRICT_STATUS="${AO_TF_STRICT_STATUS:-1}"
+
+REPO=""
+WORKDIR=""
+REPORT_REPO=""
+REPORT_ISSUE=""
+if [ "$PROJECT" = "tf" ]; then
+  REPO="carmandale/GJ-testflight-release"
+  WORKDIR="$HOME/Groove Jones Dropbox/Dale Carman/Projects/dev/GJ-testflight-release"
+  REPORT_REPO="${AO_REPORT_REPO:-carmandale/agent-orchestrator}"
+  REPORT_ISSUE="${AO_REPORT_ISSUE:-1}"
+else
+  echo "Unknown project: $PROJECT"
+  echo "Configured projects are expected in ~/.config/agent-orchestrator/config.yaml."
+  exit 1
+fi
+
+POLL_SECONDS=20
+MAX_ATTEMPTS=180 # 1 hour
+
+normalize_status() {
+  local raw
+  raw="$1"
+  printf "%s" "$raw" | \
+    sed -E 's/\*\*//g' | \
+    sed -E 's/^[[:space:]]*-[[:space:]]*//' | \
+    sed -E 's/^[[:space:]]*Issue[[:space:]]*#[0-9]+[[:space:]]*[sS]tatus:[[:space:]]*//' | \
+    sed -E 's/^[[:space:]]*[sS]tatus:[[:space:]]*//' | \
+    sed -E 's/[[:space:]]+$//'
+}
+
+normalize_yesno() {
+  local raw
+  raw="$1"
+  raw="$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | xargs)"
+  case "$raw" in
+    y|yes|true|1)
+      printf "yes"
+      ;;
+    n|no|false|0)
+      printf "no"
+      ;;
+    *)
+      printf "%s" "$raw"
+      ;;
+  esac
+}
+
+is_stale_template_blockers() {
+  local blockers="$1"
+  local lower
+  lower="$(printf "%s" "$blockers" | tr '[:upper:]' '[:lower:]')"
+  if printf "%s" "$lower" | rg -q 'template only|placeholder|path is currently missing|specs? directory is currently absent|not initialized|no active release is in progress yet|all app status files contain placeholder|not found.*app/project config|no concrete .*in repo|no repository-level script|current_project_version.*not found|marketing_version.*not found|app_store_metadata.*not found|releases/current\.md.*missing|status.*changes made|no releases in flight|all app status files are all tbd|bundle id.*tbd|current\.md.*template only|preflight status'; then
+    return 0
+  fi
+  return 1
+}
+
+status_for_issue() {
+  local issue="$1"
+  local raw clean status blockers blockers_lines build uploaded
+
+  raw="$(gh issue view "$issue" --repo "$REPO" --json comments --jq '.comments[-1].body // ""' 2>/dev/null || true)"
+  if [ -z "$raw" ]; then
+    printf "Pending|Issue %s has not posted a status yet|||\n" "$issue"
+    return
+  fi
+
+  # Strip ANSI control sequences and normalize line endings
+  clean="$(printf "%s" "$raw" | tr -d '\r' | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')"
+
+  # Find first status line like:
+  #   **Status: Blocked**
+  #   - **Status:** Blocked
+  #   Issue #5 status: ...
+  #   Blocked
+  status="$(printf "%s\n" "$clean" | awk '
+    BEGIN {found=0}
+    {
+      line=$0
+      lower=tolower(line)
+      if (found==0 && lower ~ /status:/) {
+        if (line ~ /^\s*-\s*\*\*?[Ss]tatus\s*:?/ || line ~ /^\s*[Ii]ssue\s*#[0-9]+\s*[Ss]tatus\s*:/ || line ~ /^\s*[*_]*[Ss]tatus\s*:/) {
+          sub(/^.*[sS]tatus\s*:/, "", line)
+          print line
+          found=1
+        }
+      } else if (found==0 && line ~ /^\s*Blocked\b/i) {
+        print "Blocked"
+        found=1
+      } else if (found==0 && line ~ /^\s*Ready\b/i) {
+        print "Ready"
+        found=1
+      } else if (found==0 && line ~ /^\s*Completed\b/i) {
+        print "Completed"
+        found=1
+      } else if (found==0 && line ~ /^\s*Done\b/i) {
+        print "Done"
+        found=1
+      } else if (found==0 && line ~ /^\s*Pending\b/i) {
+        print "Pending"
+        found=1
+      } else if (found==0 && line ~ /^\s*Waiting\b/i) {
+        print "Waiting"
+        found=1
+      }
+    }
+  ')"
+
+  if [ -z "$status" ]; then
+    if printf "%s\n" "$clean" | rg -qi '(tf preflight status|preflight status|preflight check|blocker|not complete|not complete|missing required|not found|required item|unresolved|todo|pending|needs attention|needs follow-up)'; then
+      status="Blocked"
+    elif printf "%s\n" "$clean" | rg -qi '(completed|ready|passes|all checks complete|success)'; then
+      status="Completed"
+    else
+      status="Pending"
+    fi
+    blockers="No status keyword found in latest comment."
+    printf "%s|%s||\n" "$status" "$blockers"
+    return
+  fi
+
+  status="$(normalize_status "$status")"
+  if [ -z "$status" ]; then
+    status="Pending"
+  fi
+  status="$(printf "%s" "$status" | tr -d '\r\n')"
+
+  blockers_lines="$(printf "%s\n" "$clean" | rg '^\s*[-*]\s*\[[ xX]\]|\s*[0-9]+\)|^\s*[-*]\s.*:')"
+  if [ -z "$blockers_lines" ]; then
+    blockers_lines="No checklist items found in latest comment."
+  else
+    # Keep concise, keep lines readable for coordinator output.
+    blockers_lines="$(printf "%s\n" "$blockers_lines" | sed -E 's/^\s*[-*]\s*//' | tr '\n' '; ' | sed -E 's/[[:space:]]{2,}/ /g')"
+    [ -z "$blockers_lines" ] && blockers_lines="No checklist items found in latest comment."
+  fi
+
+  if [ "$status" = "Blocked" ] && is_stale_template_blockers "$blockers_lines"; then
+    status="Pending"
+    blockers_lines="Stale preflight template detected in latest comment; waiting for worker to post refreshed runtime status."
+  fi
+
+  if [ "$status" = "Blocked" ] && printf "%s" "$clean" | rg -q 'TF Preflight Status|Preflight check|## .*readiness'; then
+    status="Pending"
+    blockers_lines="Preflight template block detected; waiting for worker runtime status comment."
+  fi
+
+  build="$(printf "%s\n" "$clean" | awk '
+    BEGIN { found=0 }
+    {
+      if (found==0 && ($0 ~ /^\s*[-*]?\s*[Bb]uild\s*[:=]\s*/)) {
+        line=$0
+        sub(/^[[:space:]-*]*[Bb]uild\s*[:=]\s*/, "", line)
+        print line
+        found=1
+      }
+    }
+  ' | head -n1 | xargs)"
+  uploaded="$(printf "%s\n" "$clean" | awk '
+    BEGIN { found=0 }
+    {
+      if (found==0 && ($0 ~ /^\s*[-*]?\s*[Uu]ploaded\s*[:=]\s*/)) {
+        line=$0
+        sub(/^[[:space:]-*]*[Uu]ploaded\s*[:=]\s*/, "", line)
+        print line
+        found=1
+      }
+    }
+  ' | xargs)"
+  uploaded="$(normalize_yesno "$uploaded")"
+
+  if [ "$STRICT_STATUS" = "1" ] && [[ "${status,,}" == ready* || "${status,,}" == complete* || "${status,,}" == done* ]]; then
+    if [ -z "$build" ]; then
+      blockers_lines="Strict schema violation: missing Build. ${blockers_lines}"
+      status="Blocked"
+    elif [ -z "$uploaded" ] || { [ "$uploaded" != "yes" ] && [ "$uploaded" != "no" ] && [ "$uploaded" != "true" ] && [ "$uploaded" != "false" ]; }; then
+      blockers_lines="Strict schema violation: Uploaded must be yes/no. ${blockers_lines}"
+      status="Blocked"
+    elif [ "$uploaded" != "yes" ]; then
+      blockers_lines="Strict schema violation: Ready status requires Uploaded: yes. ${blockers_lines}"
+      status="Blocked"
+    fi
+  fi
+
+  printf "%s|%s|%s|%s\n" "$status" "$blockers_lines" "$build" "$uploaded"
+}
+
+is_terminal_status() {
+  local status_lc
+  status_lc="$(printf "%s" "$1" | xargs | tr '[:upper:]' '[:lower:]')"
+  if printf '%s\n' "$status_lc" | rg -qi '^(ready|readying|blocked|blocking|blocked:|waiting|done|completed|.*not[[:space:]]+ready.*|notready|unready)$|.*(done|completed).*'; then
+    return 0
+  fi
+  return 1
+}
+
+post_summary_comment() {
+  local body="$1"
+  if [ -z "$REPORT_REPO" ] || [ -z "$REPORT_ISSUE" ]; then
+    return 0
+  fi
+
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "gh not available; unable to post automatic summary comment."
+    return 0
+  fi
+
+  if ! gh issue comment "$REPORT_ISSUE" --repo "$REPORT_REPO" --body "$body" >/dev/null 2>&1; then
+    if [ -z "${GITHUB_TOKEN:-}" ]; then
+      echo "Automatic summary comment failed (likely due to GitHub auth). Set GITHUB_TOKEN or gh auth status."
+    else
+      echo "Automatic summary comment failed for $REPORT_REPO#$REPORT_ISSUE."
+    fi
+  fi
+}
+
+build_summary() {
+  local -a rows=("$@")
+  local ts blocker_count ready_count waiting_count
+  local summary
+  local issue status blockers build uploaded status_lc
+
+  ts="$(date +'%Y-%m-%d %H:%M:%S %Z')"
+  blocker_count=0
+  ready_count=0
+  waiting_count=0
+
+  summary="## tf coordinator summary\n\n"
+  summary+="Generated at: $ts\n"
+  summary+="Command: \`AO_CONFIG_PATH=\$HOME/.config/agent-orchestrator/config.yaml scripts/tf-coordinator-watch $PROJECT ${ISSUES[*]}\`\n\n"
+  summary+="### Final statuses\n"
+
+  for row in "${rows[@]}"; do
+    issue="$(printf "%s" "$row" | cut -d'|' -f1)"
+    status="$(printf "%s" "$row" | cut -d'|' -f2)"
+    blockers="$(printf "%s" "$row" | cut -d'|' -f3)"
+    build="$(printf "%s" "$row" | cut -d'|' -f4)"
+    uploaded="$(printf "%s" "$row" | cut -d'|' -f5)"
+    status_lc="$(printf "%s" "$status" | tr '[:upper:]' '[:lower:]')"
+    summary+="- Issue ${issue}: ${status}\n"
+    if [ -n "${build}" ]; then
+      summary+="  - Build: ${build}\n"
+    fi
+    if [ -n "${uploaded}" ]; then
+      summary+="  - Uploaded: ${uploaded}\n"
+    fi
+    if [ -n "${blockers}" ] && [[ "${status_lc}" == blocked* || "${status_lc}" == waiting* || "${status_lc}" == pending* ]]; then
+      summary+="  - Blockers: ${blockers}\n"
+    fi
+
+    if [[ "$status_lc" == blocked* ]]; then
+      blocker_count=$((blocker_count + 1))
+    elif [[ "$status_lc" == *ready* || "$status_lc" == *complete* ]]; then
+      ready_count=$((ready_count + 1))
+    else
+      waiting_count=$((waiting_count + 1))
+    fi
+  done
+
+  summary+="\n### Recommendation\n"
+  if [ "$blocker_count" -gt 0 ]; then
+    summary+="HOLD: release execution should wait until blockers are removed.\n"
+  elif [ "$ready_count" -eq "${#rows[@]}" ]; then
+    summary+="PROCEED: all issues are ready.\n"
+  elif [ "$waiting_count" -gt 0 ]; then
+    summary+="WAIT: external input required before proceeding.\n"
+  else
+    summary+="REVIEW: mixed terminal states; check individual issue details.\n"
+  fi
+  printf "%b" "$summary"
+}
+
+attempt=0
+while :; do
+  attempt=$((attempt + 1))
+  printf "\n[%s] Poll %03d (project=%s)\n" "$(date +'%H:%M:%S')" "$attempt" "$PROJECT"
+
+  all_done="yes"
+  results=()
+  for issue in "${ISSUES[@]}"; do
+    row="$(status_for_issue "$issue")"
+    status="$(printf "%s" "$row" | cut -d'|' -f1)"
+    blockers="$(printf "%s" "$row" | cut -d'|' -f2)"
+    build="$(printf "%s" "$row" | cut -d'|' -f3)"
+    uploaded="$(printf "%s" "$row" | cut -d'|' -f4)"
+    results+=("$issue|$status|$blockers|$build|$uploaded")
+
+    if ! is_terminal_status "$status"; then
+      all_done="no"
+    fi
+  done
+
+  for row in "${results[@]}"; do
+    issue="$(printf "%s" "$row" | cut -d'|' -f1)"
+    status="$(printf "%s" "$row" | cut -d'|' -f2)"
+    blockers="$(printf "%s" "$row" | cut -d'|' -f3)"
+    build="$(printf "%s" "$row" | cut -d'|' -f4)"
+    uploaded="$(printf "%s" "$row" | cut -d'|' -f5)"
+    if [ -n "$build" ] && [ "$build" != "-" ]; then
+      printf "  Issue %-2s => %-24s | %s | build=%s | uploaded=%s\n" "$issue" "$status" "$blockers" "$build" "${uploaded:-n/a}"
+    else
+      printf "  Issue %-2s => %-24s | %s\n" "$issue" "$status" "$blockers"
+    fi
+  done
+
+  if [ "$all_done" = "yes" ]; then
+    echo
+    echo "All issues have finalized status. Final coordination summary:"
+    cd "$WORKDIR"
+    blocker_count=0
+    ready_count=0
+    waiting_count=0
+
+    for row in "${results[@]}"; do
+      issue="$(printf "%s" "$row" | cut -d'|' -f1)"
+      status="$(printf "%s" "$row" | cut -d'|' -f2)"
+      blockers="$(printf "%s" "$row" | cut -d'|' -f3)"
+      build="$(printf "%s" "$row" | cut -d'|' -f4)"
+      uploaded="$(printf "%s" "$row" | cut -d'|' -f5)"
+      status_lc="$(printf "%s" "$status" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$status_lc" == blocked* ]]; then
+        blocker_count=$((blocker_count + 1))
+        printf "  - %s: BLOCKED\n    %s\n" "$issue" "$blockers"
+      elif [[ "$status_lc" == *ready* || "$status_lc" == *complete* ]]; then
+        ready_count=$((ready_count + 1))
+        printf "  - %s: READY (build=%s, uploaded=%s)\n" "$issue" "${build:-unknown}" "${uploaded:-unknown}"
+      else
+        waiting_count=$((waiting_count + 1))
+        printf "  - %s: %s\n" "$issue" "$status"
+      fi
+    done
+
+    if [ "$blocker_count" -gt 0 ]; then
+      echo
+      echo "RECOMMENDATION: Hold release until blockers are removed."
+    elif [ "$ready_count" -eq "${#ISSUES[@]}" ]; then
+      echo
+      echo "RECOMMENDATION: Proceed to TestFlight execution."
+    elif [ "$waiting_count" -gt 0 ]; then
+      echo
+      echo "RECOMMENDATION: Wait for external input, then re-run this watcher."
+    else
+      echo
+      echo "RECOMMENDATION: Review mixed terminal states."
+    fi
+    summary="$(build_summary "${results[@]}")"
+    printf "%b\n" "$summary"
+    post_summary_comment "$summary"
+    break
+  fi
+
+  if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+    echo "Timed out before all issues reached terminal status."
+    exit 1
+  fi
+
+  sleep "$POLL_SECONDS"
+done

@@ -290,6 +290,12 @@ function createCodexAgent(): Agent {
         parts.push("--model", shellEscape(config.model));
       }
 
+      if (config.extraArgs?.length) {
+        for (const arg of config.extraArgs) {
+          parts.push(shellEscape(arg));
+        }
+      }
+
       if (config.systemPromptFile) {
         // Codex reads developer instructions from a file via config override
         parts.push("-c", `model_instructions_file=${shellEscape(config.systemPromptFile)}`);
