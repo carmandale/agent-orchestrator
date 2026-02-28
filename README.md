@@ -75,6 +75,7 @@ port: 3000
 defaults:
   runtime: tmux
   agent: claude-code
+  orchestratorAgent: claude-code
   workspace: worktree
   notifiers: [desktop]
 
@@ -102,6 +103,23 @@ reactions:
 CI fails → agent gets the logs and fixes it. Reviewer requests changes → agent addresses them. PR approved with green CI → you get a notification to merge.
 
 See [`agent-orchestrator.yaml.example`](agent-orchestrator.yaml.example) for the full reference.
+
+### Split Orchestrator + Worker Agents
+
+Use this pattern when you want the orchestrator on Claude Code and workers on Codex:
+
+```yaml
+defaults:
+  agent: codex
+  orchestratorAgent: claude-code
+  agentConfig:
+    permissions: skip
+  orchestratorAgentConfig:
+    model: opus-4.6
+    permissions: skip
+```
+
+`agentConfig` is shared for worker sessions. `orchestratorAgentConfig` is layered on top for orchestrator sessions.
 
 ## CLI
 

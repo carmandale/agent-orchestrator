@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, rmSync, mkdirSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, relative, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import type {
   PluginModule,
@@ -47,6 +47,14 @@ export function create(config?: Record<string, unknown>): Workspace {
   const cloneBaseDir = config?.cloneDir
     ? expandPath(config.cloneDir as string)
     : join(homedir(), ".ao-clones");
+  const resolvedCloneBaseDir = resolve(cloneBaseDir);
+
+  function isManagedClonePath(workspacePath: string): boolean {
+    const resolvedWorkspacePath = resolve(workspacePath);
+    const rel = relative(resolvedCloneBaseDir, resolvedWorkspacePath);
+    // Must be inside base dir and not equal to base dir itself.
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  }
 
   return {
     name: "clone",
@@ -126,6 +134,10 @@ export function create(config?: Record<string, unknown>): Workspace {
     },
 
     async destroy(workspacePath: string): Promise<void> {
+      if (!isManagedClonePath(workspacePath)) {
+        throw new Error(`Refusing to destroy workspace outside managed cloneDir: ${workspacePath}`);
+      }
+
       if (existsSync(workspacePath)) {
         rmSync(workspacePath, { recursive: true, force: true });
       }

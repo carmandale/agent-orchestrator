@@ -3,10 +3,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { type Agent, type Session, loadConfig } from "@composio/ao-core";
+import { type Agent, type Session, type OrchestratorConfig, loadConfig } from "@composio/ao-core";
 import { exec, tmux } from "../lib/shell.js";
 import { getAgentByName } from "../lib/plugins.js";
 import { getSessionManager } from "../lib/create-session-manager.js";
+
+function resolveSessionAgentName(config: OrchestratorConfig, session: Session): string {
+  const project = config.projects[session.projectId];
+
+  if (session.metadata["agent"]) {
+    return session.metadata["agent"];
+  }
+
+  if (session.id.endsWith("-orchestrator")) {
+    return (
+      project?.orchestratorAgent ??
+      config.defaults.orchestratorAgent ??
+      project?.agent ??
+      config.defaults.agent
+    );
+  }
+
+  return project?.agent ?? config.defaults.agent;
+}
 
 /**
  * Resolve session context: tmux target name and Agent plugin.
@@ -21,9 +40,12 @@ async function resolveSessionContext(
     const session = await sm.get(sessionName);
     if (session) {
       const tmuxTarget = session.runtimeHandle?.id ?? sessionName;
-      const project = config.projects[session.projectId];
-      const agentName = project?.agent ?? config.defaults.agent;
-      return { tmuxTarget, agent: getAgentByName(agentName), session };
+      const agentName = resolveSessionAgentName(config, session);
+      try {
+        return { tmuxTarget, agent: getAgentByName(agentName), session };
+      } catch {
+        return { tmuxTarget, agent: getAgentByName("claude-code"), session };
+      }
     }
   } catch {
     // No config or session not found — fall back to defaults

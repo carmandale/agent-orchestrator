@@ -4,6 +4,8 @@ import {
   type Agent,
   type SCM,
   type Session,
+  type ProjectConfig,
+  type OrchestratorConfig,
   type PRInfo,
   type CIStatus,
   type ReviewDecision,
@@ -38,6 +40,36 @@ interface SessionInfo {
   reviewDecision: ReviewDecision | null;
   pendingThreads: number | null;
   activity: ActivityState | null;
+}
+
+function resolveSessionAgentName(
+  config: OrchestratorConfig,
+  project: ProjectConfig,
+  session: Session,
+): string {
+  if (session.metadata["agent"]) {
+    return session.metadata["agent"];
+  }
+
+  if (session.id.endsWith("-orchestrator")) {
+    return (
+      project.orchestratorAgent ??
+      config.defaults.orchestratorAgent ??
+      project.agent ??
+      config.defaults.agent
+    );
+  }
+
+  return project.agent ?? config.defaults.agent;
+}
+
+function resolveSessionAgent(config: OrchestratorConfig, project: ProjectConfig, session: Session): Agent {
+  const agentName = resolveSessionAgentName(config, project, session);
+  try {
+    return getAgentByName(agentName);
+  } catch {
+    return getAgentByName("claude-code");
+  }
 }
 
 async function gatherSessionInfo(
@@ -238,9 +270,7 @@ export function registerStatus(program: Command): void {
           a.id.localeCompare(b.id),
         );
 
-        // Resolve agent and SCM for this project
-        const agentName = projectConfig.agent ?? config.defaults.agent;
-        const agent = getAgentByName(agentName);
+        // Resolve SCM for this project
         const scm = getSCM(config, projectId);
 
         if (!opts.json) {
@@ -262,7 +292,10 @@ export function registerStatus(program: Command): void {
         }
 
         // Gather all session info in parallel
-        const infoPromises = projectSessions.map((s) => gatherSessionInfo(s, agent, scm, config));
+        const infoPromises = projectSessions.map((s) => {
+          const sessionAgent = resolveSessionAgent(config, projectConfig, s);
+          return gatherSessionInfo(s, sessionAgent, scm, config);
+        });
         const sessionInfos = await Promise.all(infoPromises);
 
         for (const info of sessionInfos) {

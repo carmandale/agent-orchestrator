@@ -4,7 +4,8 @@
  */
 
 import { resolve } from "node:path";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import ora from "ora";
 import { execSilent } from "./shell.js";
 
@@ -67,8 +68,9 @@ export async function cleanNextCache(webDir: string): Promise<void> {
   if (existsSync(nextDir)) {
     const spinner = ora();
     spinner.start("Cleaning .next build cache");
-    rmSync(nextDir, { recursive: true, force: true });
+    // Next's dev server can still be unwinding file handles right after SIGTERM.
+    // Retry removal to avoid transient ENOTEMPTY/EBUSY failures on macOS.
+    await rm(nextDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     spinner.succeed(`Cleaned .next build cache (${webDir})`);
   }
 }
-

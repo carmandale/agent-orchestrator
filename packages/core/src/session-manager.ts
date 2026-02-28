@@ -11,8 +11,8 @@
  * Reference: scripts/claude-ao-session, scripts/send-to-session
  */
 
-import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { join, resolve, relative, isAbsolute } from "node:path";
 import {
   isIssueNotFoundError,
   isRestorable,
@@ -30,6 +30,7 @@ import {
   type ProjectConfig,
   type Runtime,
   type Agent,
+  type AgentSpecificConfig,
   type Workspace,
   type Tracker,
   type SCM,
@@ -61,6 +62,8 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+type AgentRole = "worker" | "orchestrator";
+
 /** Get the next session number for a project. */
 function getNextSessionNumber(existingSessions: string[], prefix: string): number {
   let max = 0;
@@ -82,6 +85,29 @@ function safeJsonParse<T>(str: string): T | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Normalize a filesystem path to a stable canonical form for safety checks.
+ * Falls back to absolute resolve when realpath is unavailable (e.g. path missing).
+ */
+function toCanonicalPath(path: string): string {
+  try {
+    // Node 18+ supports realpathSync.native; fallback for compatibility.
+    return (realpathSync as typeof realpathSync & { native?: (p: string) => string }).native?.(path)
+      ?? realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/** True when candidate is the same path as, or a descendant of, ancestor. */
+function isSameOrDescendantPath(candidate: string, ancestor: string): boolean {
+  const normCandidate = toCanonicalPath(candidate);
+  const normAncestor = toCanonicalPath(ancestor);
+  if (normCandidate === normAncestor) return true;
+  const rel = relative(normAncestor, normCandidate);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 /** Valid session statuses for validation. */
@@ -225,6 +251,61 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     return { runtime, agent, workspace, tracker, scm };
   }
 
+  function resolveOrchestratorPlugins(project: ProjectConfig) {
+    const orchestratorAgent =
+      project.orchestratorAgent ??
+      config.defaults.orchestratorAgent ??
+      project.agent ??
+      config.defaults.agent;
+    const runtime = registry.get<Runtime>("runtime", project.runtime ?? config.defaults.runtime);
+    const agent = registry.get<Agent>("agent", orchestratorAgent);
+    const workspace = registry.get<Workspace>(
+      "workspace",
+      project.workspace ?? config.defaults.workspace,
+    );
+    const tracker = project.tracker
+      ? registry.get<Tracker>("tracker", project.tracker.plugin)
+      : null;
+    const scm = project.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
+
+    return { runtime, agent, workspace, tracker, scm };
+  }
+
+  function resolvePluginsForSession(
+    project: ProjectConfig,
+    sessionId: string,
+    agentOverride?: string,
+  ) {
+    const fallbackAgent = sessionId.endsWith("-orchestrator")
+      ? project.orchestratorAgent ??
+        config.defaults.orchestratorAgent ??
+        project.agent ??
+        config.defaults.agent
+      : project.agent ?? config.defaults.agent;
+
+    const agentName = agentOverride ?? fallbackAgent;
+    return resolvePlugins(project, agentName);
+  }
+
+  function getAgentConfig(project: ProjectConfig, role: AgentRole): AgentSpecificConfig {
+    const defaultCommon = config.defaults.agentConfig ?? {};
+    const projectCommon = project.agentConfig ?? {};
+
+    if (role === "orchestrator") {
+      return {
+        ...defaultCommon,
+        ...(config.defaults.orchestratorAgentConfig ?? {}),
+        ...projectCommon,
+        ...(project.orchestratorAgentConfig ?? {}),
+      };
+    }
+
+    return {
+      ...defaultCommon,
+      ...projectCommon,
+    };
+  }
+
   /**
    * Ensure session has a runtime handle (fabricate one if missing) and enrich
    * with live runtime state + activity detection. Used by both list() and get().
@@ -333,7 +414,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     }
 
     if (!plugins.agent) {
-      throw new Error(`Agent plugin '${project.agent ?? config.defaults.agent}' not found`);
+      const workerAgent = project.agent ?? config.defaults.agent;
+      throw new Error(`Agent plugin '${workerAgent ?? "claude-code"}' not found`);
     }
 
     // Validate issue exists BEFORE creating any resources
@@ -462,8 +544,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       projectConfig: project,
       issueId: spawnConfig.issueId,
       prompt: composedPrompt ?? spawnConfig.prompt,
-      permissions: project.agentConfig?.permissions,
-      model: project.agentConfig?.model,
+      ...getAgentConfig(project, "worker"),
     };
 
     let handle: RuntimeHandle;
@@ -564,12 +645,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       throw new Error(`Unknown project: ${orchestratorConfig.projectId}`);
     }
 
-    const plugins = resolvePlugins(project);
+    const plugins = resolveOrchestratorPlugins(project);
     if (!plugins.runtime) {
       throw new Error(`Runtime plugin '${project.runtime ?? config.defaults.runtime}' not found`);
     }
     if (!plugins.agent) {
-      throw new Error(`Agent plugin '${project.agent ?? config.defaults.agent}' not found`);
+      const orchestratorAgent =
+        project.orchestratorAgent ??
+        config.defaults.orchestratorAgent ??
+        project.agent ??
+        config.defaults.agent;
+      throw new Error(`Agent plugin '${orchestratorAgent}' not found`);
     }
 
     const sessionId = `${project.sessionPrefix}-orchestrator`;
@@ -606,11 +692,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     }
 
     // Get agent launch config — uses systemPromptFile, no issue/tracker interaction
+    const orchestratorAgentConfig = getAgentConfig(project, "orchestrator");
     const agentLaunchConfig = {
       sessionId,
       projectConfig: project,
-      permissions: project.agentConfig?.permissions,
-      model: project.agentConfig?.model,
+      ...orchestratorAgentConfig,
       systemPromptFile,
     };
 
@@ -654,6 +740,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         status: "working",
         tmuxName,
         project: orchestratorConfig.projectId,
+        agent: plugins.agent.name,
         createdAt: new Date().toISOString(),
         runtimeHandle: JSON.stringify(handle),
       });
@@ -704,7 +791,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
       const session = metadataToSession(sessionName, raw, createdAt, modifiedAt);
 
-      const plugins = resolvePlugins(project, raw["agent"]);
+      const plugins = resolvePluginsForSession(project, sessionName, raw["agent"]);
       // Cap per-session enrichment at 2s — subprocess calls (tmux/ps) can be
       // slow under load. If we time out, session keeps its metadata values.
       const enrichTimeout = new Promise<void>((resolve) => setTimeout(resolve, 2_000));
@@ -738,7 +825,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
       const session = metadataToSession(sessionId, raw, createdAt, modifiedAt);
 
-      const plugins = resolvePlugins(project, raw["agent"]);
+      const plugins = resolvePluginsForSession(project, sessionId, raw["agent"]);
       await ensureHandleAndEnrich(session, sessionId, project, plugins);
 
       return session;
@@ -787,10 +874,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       }
     }
 
-    // Destroy workspace — skip if worktree is the project path (no isolation was used)
+    // Destroy workspace for isolated sessions only.
+    // Safety: never destroy when workspace resolves to the project path or an ancestor of it.
     const worktree = raw["worktree"];
-    const isProjectPath = project && worktree === project.path;
-    if (worktree && !isProjectPath) {
+    const isUnsafeWorkspacePath = project && worktree
+      ? isSameOrDescendantPath(project.path, worktree)
+      : false;
+    if (worktree && !isUnsafeWorkspacePath) {
       const workspacePlugin = project
         ? resolvePlugins(project).workspace
         : registry.get<Workspace>("workspace", config.defaults.workspace);
@@ -978,7 +1068,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     //    session (status "working", agent exited) would not be detected as terminal
     //    and isRestorable would reject it.
     const session = metadataToSession(sessionId, raw);
-    const plugins = resolvePlugins(project, raw["agent"]);
+    const plugins = resolvePluginsForSession(project, sessionId, raw["agent"]);
     await enrichSessionWithRuntimeState(session, plugins, true);
 
     // 3. Validate restorability
@@ -994,7 +1084,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       throw new Error(`Runtime plugin '${project.runtime ?? config.defaults.runtime}' not found`);
     }
     if (!plugins.agent) {
-      throw new Error(`Agent plugin '${project.agent ?? config.defaults.agent}' not found`);
+      const fallbackAgent = sessionId.endsWith("-orchestrator")
+        ? project.orchestratorAgent ??
+          config.defaults.orchestratorAgent ??
+          project.agent ??
+          config.defaults.agent
+        : project.agent ?? config.defaults.agent;
+      throw new Error(`Agent plugin '${fallbackAgent}' not found`);
     }
 
     // 5. Check workspace
@@ -1045,15 +1141,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     // 7. Get launch command — try restore command first, fall back to fresh launch
     let launchCommand: string;
+    const isOrchestrator = sessionId.endsWith("-orchestrator");
+    const agentConfigForSession = getAgentConfig(project, isOrchestrator ? "orchestrator" : "worker");
     const agentLaunchConfig = {
       sessionId,
       projectConfig: project,
       issueId: session.issueId ?? undefined,
-      permissions: project.agentConfig?.permissions,
-      model: project.agentConfig?.model,
+      ...agentConfigForSession,
     };
 
-    if (plugins.agent.getRestoreCommand) {
+    if (!isOrchestrator && plugins.agent.getRestoreCommand) {
       const restoreCmd = await plugins.agent.getRestoreCommand(session, project);
       launchCommand = restoreCmd ?? plugins.agent.getLaunchCommand(agentLaunchConfig);
     } else {

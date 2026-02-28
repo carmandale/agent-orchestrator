@@ -21,7 +21,11 @@ import {
 import { exec } from "../lib/shell.js";
 import { getSessionManager } from "../lib/create-session-manager.js";
 import { findWebDir, buildDashboardEnv } from "../lib/web-dir.js";
-import { cleanNextCache } from "../lib/dashboard-rebuild.js";
+import {
+  cleanNextCache,
+  findRunningDashboardPid,
+  waitForPortFree,
+} from "../lib/dashboard-rebuild.js";
 
 /**
  * Resolve project from config.
@@ -152,6 +156,26 @@ export function registerStart(program: Command): void {
             }
 
             if (opts?.rebuild) {
+              const runningPid = await findRunningDashboardPid(port);
+              if (runningPid) {
+                console.log(chalk.dim(`Stopping dashboard (PID ${runningPid}) on port ${port}...`));
+                try {
+                  process.kill(parseInt(runningPid, 10), "SIGTERM");
+                } catch {
+                  // Process already exited (ESRCH) — that's fine
+                }
+                try {
+                  await waitForPortFree(port, 5000);
+                } catch {
+                  // Graceful stop failed — force kill and retry once
+                  try {
+                    process.kill(parseInt(runningPid, 10), "SIGKILL");
+                  } catch {
+                    // Best effort
+                  }
+                  await waitForPortFree(port, 5000);
+                }
+              }
               await cleanNextCache(webDir);
             }
 

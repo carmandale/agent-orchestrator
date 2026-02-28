@@ -1,9 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { mockTmux, mockExec, mockDetectActivity } = vi.hoisted(() => ({
+const {
+  mockTmux,
+  mockExec,
+  mockDetectActivity,
+  mockCodexDetectActivity,
+  mockGetAgentByName,
+  mockConfigRef,
+  mockSessionManager,
+} = vi.hoisted(() => ({
   mockTmux: vi.fn(),
   mockExec: vi.fn(),
   mockDetectActivity: vi.fn(),
+  mockCodexDetectActivity: vi.fn(),
+  mockGetAgentByName: vi.fn(),
+  mockConfigRef: { current: null as Record<string, unknown> | null },
+  mockSessionManager: {
+    get: vi.fn(),
+  },
 }));
 
 vi.mock("../../src/lib/shell.js", () => ({
@@ -15,16 +29,8 @@ vi.mock("../../src/lib/shell.js", () => ({
 }));
 
 vi.mock("../../src/lib/plugins.js", () => ({
-  getAgent: () => ({
-    name: "claude-code",
-    processName: "claude",
-    detectActivity: mockDetectActivity,
-  }),
-  getAgentByName: () => ({
-    name: "claude-code",
-    processName: "claude",
-    detectActivity: mockDetectActivity,
-  }),
+  getAgent: (config: { defaults: { agent: string } }) => mockGetAgentByName(config.defaults.agent),
+  getAgentByName: mockGetAgentByName,
 }));
 
 vi.mock("../../src/lib/session-utils.js", () => ({
@@ -33,8 +39,15 @@ vi.mock("../../src/lib/session-utils.js", () => ({
 
 vi.mock("@composio/ao-core", () => ({
   loadConfig: () => {
-    throw new Error("no config");
+    if (!mockConfigRef.current) {
+      throw new Error("no config");
+    }
+    return mockConfigRef.current;
   },
+}));
+
+vi.mock("../../src/lib/create-session-manager.js", () => ({
+  getSessionManager: async () => mockSessionManager,
 }));
 
 import { Command } from "commander";
@@ -58,7 +71,26 @@ beforeEach(() => {
   mockTmux.mockReset();
   mockExec.mockReset();
   mockDetectActivity.mockReset();
+  mockCodexDetectActivity.mockReset();
+  mockGetAgentByName.mockReset();
+  mockConfigRef.current = null;
+  mockSessionManager.get.mockReset();
   mockExec.mockResolvedValue({ stdout: "", stderr: "" });
+  mockSessionManager.get.mockResolvedValue(null);
+  mockGetAgentByName.mockImplementation((name: string) => {
+    if (name === "codex") {
+      return {
+        name: "codex",
+        processName: "codex",
+        detectActivity: mockCodexDetectActivity,
+      };
+    }
+    return {
+      name: "claude-code",
+      processName: "claude",
+      detectActivity: mockDetectActivity,
+    };
+  });
 });
 
 afterEach(() => {
@@ -115,6 +147,72 @@ describe("send command", () => {
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining("Message sent and processing"),
       );
+    });
+
+    it("uses agent from session metadata when available", async () => {
+      mockConfigRef.current = {
+        defaults: {
+          agent: "claude-code",
+          orchestratorAgent: "claude-code",
+        },
+        projects: {
+          "my-app": {
+            agent: "claude-code",
+          },
+        },
+      };
+      mockSessionManager.get.mockResolvedValue({
+        id: "my-session",
+        projectId: "my-app",
+        metadata: { agent: "codex" },
+        runtimeHandle: { id: "my-session", runtimeName: "tmux", data: {} },
+      });
+
+      mockTmux.mockImplementation(async (...args: string[]) => {
+        if (args[0] === "has-session") return "";
+        if (args[0] === "capture-pane") return "some output\n> ";
+        return "";
+      });
+
+      mockCodexDetectActivity.mockReturnValueOnce("idle").mockReturnValueOnce("active");
+
+      await program.parseAsync(["node", "test", "send", "my-session", "hello"]);
+
+      expect(mockGetAgentByName).toHaveBeenCalledWith("codex");
+      expect(mockCodexDetectActivity).toHaveBeenCalled();
+      expect(mockDetectActivity).not.toHaveBeenCalled();
+    });
+
+    it("falls back to orchestratorAgent for orchestrator sessions", async () => {
+      mockConfigRef.current = {
+        defaults: {
+          agent: "codex",
+          orchestratorAgent: "claude-code",
+        },
+        projects: {
+          "my-app": {
+            agent: "codex",
+          },
+        },
+      };
+      mockSessionManager.get.mockResolvedValue({
+        id: "app-orchestrator",
+        projectId: "my-app",
+        metadata: {},
+        runtimeHandle: { id: "app-orchestrator", runtimeName: "tmux", data: {} },
+      });
+
+      mockTmux.mockImplementation(async (...args: string[]) => {
+        if (args[0] === "has-session") return "";
+        if (args[0] === "capture-pane") return "Output\n❯ ";
+        return "";
+      });
+
+      mockDetectActivity.mockReturnValueOnce("idle").mockReturnValueOnce("active");
+
+      await program.parseAsync(["node", "test", "send", "app-orchestrator", "hello"]);
+
+      expect(mockGetAgentByName).toHaveBeenCalledWith("claude-code");
     });
 
     it("detects busy session and waits via agent plugin", async () => {

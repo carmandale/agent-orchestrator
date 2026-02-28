@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, lstatSync, symlinkSync, rmSync, mkdirSync, readdirSync } from "node:fs";
-import { join, resolve, basename, dirname } from "node:path";
+import { join, resolve, basename, dirname, relative, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import type {
   PluginModule,
@@ -50,6 +50,14 @@ export function create(config?: Record<string, unknown>): Workspace {
   const worktreeBaseDir = config?.worktreeDir
     ? expandPath(config.worktreeDir as string)
     : join(homedir(), ".worktrees");
+  const resolvedWorktreeBaseDir = resolve(worktreeBaseDir);
+
+  function isManagedWorkspacePath(workspacePath: string): boolean {
+    const resolvedWorkspacePath = resolve(workspacePath);
+    const rel = relative(resolvedWorktreeBaseDir, resolvedWorkspacePath);
+    // Must be inside base dir and not equal to base dir itself.
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  }
 
   return {
     name: "worktree",
@@ -112,6 +120,17 @@ export function create(config?: Record<string, unknown>): Workspace {
     },
 
     async destroy(workspacePath: string): Promise<void> {
+      if (!isManagedWorkspacePath(workspacePath)) {
+        throw new Error(
+          `Refusing to destroy workspace outside managed worktreeDir: ${workspacePath}`,
+        );
+      }
+
+      if (!existsSync(workspacePath)) {
+        // Already gone — idempotent success.
+        return;
+      }
+
       try {
         const gitCommonDir = await git(
           workspacePath,
@@ -128,11 +147,9 @@ export function create(config?: Record<string, unknown>): Workspace {
         // pre-existing local branches unrelated to this workspace (any branch
         // containing "/" would have been deleted). Stale branches can be
         // cleaned up separately via `git branch --merged` or similar.
-      } catch {
-        // If git commands fail, try to clean up the directory
-        if (existsSync(workspacePath)) {
-          rmSync(workspacePath, { recursive: true, force: true });
-        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to destroy worktree "${workspacePath}": ${msg}`, { cause: err });
       }
     },
 

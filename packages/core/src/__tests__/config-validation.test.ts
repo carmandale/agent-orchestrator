@@ -398,4 +398,48 @@ describe("Config Defaults", () => {
     const validated = validateConfig(config);
     expect(validated.projects.proj1.tracker).toEqual({ plugin: "github" });
   });
+
+  it("supports orchestrator/worker split agent config fields", () => {
+    const config = {
+      defaults: {
+        runtime: "tmux",
+        agent: "codex",
+        orchestratorAgent: "claude-code",
+        workspace: "worktree",
+        notifiers: ["desktop"],
+        agentConfig: {
+          permissions: "skip",
+        },
+        orchestratorAgentConfig: {
+          model: "opus-4.6",
+        },
+      },
+      projects: {
+        proj1: {
+          path: "/repos/test",
+          repo: "org/test",
+          defaultBranch: "main",
+          orchestratorAgent: "claude-code",
+          agentConfig: {
+            model: "gpt-5-codex",
+            extraArgs: ["--dangerously-bypass-approvals-and-sandbox"],
+          },
+          orchestratorAgentConfig: {
+            permissions: "skip",
+            model: "opus-4.6",
+          },
+        },
+      },
+    };
+
+    const validated = validateConfig(config);
+    expect(validated.defaults.orchestratorAgent).toBe("claude-code");
+    expect(validated.defaults.agentConfig?.permissions).toBe("skip");
+    expect(validated.defaults.orchestratorAgentConfig?.model).toBe("opus-4.6");
+    expect(validated.projects.proj1.orchestratorAgent).toBe("claude-code");
+    expect(validated.projects.proj1.agentConfig?.extraArgs).toEqual([
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
+    expect(validated.projects.proj1.orchestratorAgentConfig?.model).toBe("opus-4.6");
+  });
 });

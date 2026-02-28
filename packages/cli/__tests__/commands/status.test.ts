@@ -21,6 +21,7 @@ const {
   mockGetPendingComments,
   mockSessionManager,
   sessionsDirRef,
+  mockGetAgentByName,
 } = vi.hoisted(() => ({
   mockTmux: vi.fn(),
   mockGit: vi.fn(),
@@ -41,6 +42,7 @@ const {
     send: vi.fn(),
   },
   sessionsDirRef: { current: "" },
+  mockGetAgentByName: vi.fn(),
 }));
 
 vi.mock("../../src/lib/shell.js", () => ({
@@ -72,20 +74,8 @@ vi.mock("@composio/ao-core", async (importOriginal) => {
 });
 
 vi.mock("../../src/lib/plugins.js", () => ({
-  getAgent: () => ({
-    name: "claude-code",
-    processName: "claude",
-    detectActivity: () => "idle",
-    getSessionInfo: mockIntrospect,
-    getActivityState: mockGetActivityState,
-  }),
-  getAgentByName: () => ({
-    name: "claude-code",
-    processName: "claude",
-    detectActivity: () => "idle",
-    getSessionInfo: mockIntrospect,
-    getActivityState: mockGetActivityState,
-  }),
+  getAgent: (config: { defaults: { agent: string } }) => mockGetAgentByName(config.defaults.agent),
+  getAgentByName: mockGetAgentByName,
   getSCM: () => ({
     name: "github",
     detectPR: mockDetectPR,
@@ -220,12 +210,20 @@ beforeEach(() => {
   mockGetReviewDecision.mockResolvedValue("none");
   mockGetPendingComments.mockReset();
   mockGetPendingComments.mockResolvedValue([]);
+  mockGetAgentByName.mockReset();
   mockSessionManager.list.mockReset();
   mockSessionManager.kill.mockReset();
   mockSessionManager.cleanup.mockReset();
   mockSessionManager.get.mockReset();
   mockSessionManager.spawn.mockReset();
   mockSessionManager.send.mockReset();
+  mockGetAgentByName.mockImplementation((name: string) => ({
+    name,
+    processName: name === "codex" ? "codex" : "claude",
+    detectActivity: () => "idle",
+    getSessionInfo: mockIntrospect,
+    getActivityState: mockGetActivityState,
+  }));
 
   // Default: list reads from sessionsDir
   mockSessionManager.list.mockImplementation(async () => {
@@ -247,6 +245,28 @@ describe("status command", () => {
     const output = consoleSpy.mock.calls.map((c) => c[0]).join("\n");
     expect(output).toContain("AGENT ORCHESTRATOR STATUS");
     expect(output).toContain("My App");
+  });
+
+  it("resolves mixed worker/orchestrator agents per session", async () => {
+    const cfg = mockConfigRef.current as Record<string, unknown>;
+    (cfg.defaults as { agent: string; orchestratorAgent?: string }).agent = "codex";
+    (cfg.defaults as { agent: string; orchestratorAgent?: string }).orchestratorAgent =
+      "claude-code";
+    ((cfg.projects as Record<string, { agent?: string }>)["my-app"]).agent = "codex";
+
+    writeFileSync(join(sessionsDir, "app-1"), "branch=feat/INT-100\nstatus=working\nagent=codex\n");
+    writeFileSync(join(sessionsDir, "app-orchestrator"), "branch=main\nstatus=working\n");
+
+    mockTmux.mockImplementation(async (...args: string[]) => {
+      if (args[0] === "display-message") return null;
+      return null;
+    });
+    mockGit.mockResolvedValue(null);
+
+    await program.parseAsync(["node", "test", "status"]);
+
+    expect(mockGetAgentByName).toHaveBeenCalledWith("codex");
+    expect(mockGetAgentByName).toHaveBeenCalledWith("claude-code");
   });
 
   it("shows no active sessions when tmux returns nothing", async () => {

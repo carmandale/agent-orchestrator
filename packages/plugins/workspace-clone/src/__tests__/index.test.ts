@@ -472,6 +472,28 @@ describe("workspace.destroy()", () => {
 
     expect(fs.rmSync).not.toHaveBeenCalled();
   });
+
+  it("rejects destruction outside managed cloneDir", async () => {
+    const workspace = create();
+
+    await expect(workspace.destroy("/repo/path")).rejects.toThrow(
+      "Refusing to destroy workspace outside managed cloneDir: /repo/path",
+    );
+
+    expect(fs.existsSync).not.toHaveBeenCalled();
+    expect(fs.rmSync).not.toHaveBeenCalled();
+  });
+
+  it("rejects destruction of clone base dir itself", async () => {
+    const workspace = create();
+
+    await expect(workspace.destroy("/mock-home/.ao-clones")).rejects.toThrow(
+      "Refusing to destroy workspace outside managed cloneDir: /mock-home/.ao-clones",
+    );
+
+    expect(fs.existsSync).not.toHaveBeenCalled();
+    expect(fs.rmSync).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

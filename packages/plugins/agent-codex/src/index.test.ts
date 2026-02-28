@@ -158,6 +158,16 @@ describe("getLaunchCommand", () => {
     expect(cmd).toContain("--model 'gpt-4o'");
   });
 
+  it("appends extraArgs in order with shell escaping", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({
+        extraArgs: ["--dangerously-bypass-approvals-and-sandbox", "--config=dev mode"],
+      }),
+    );
+    expect(cmd).toContain("'--dangerously-bypass-approvals-and-sandbox'");
+    expect(cmd).toContain("'--config=dev mode'");
+  });
+
   it("appends shell-escaped prompt with -- separator", () => {
     const cmd = agent.getLaunchCommand(makeLaunchConfig({ prompt: "Fix it" }));
     expect(cmd).toContain("-- 'Fix it'");

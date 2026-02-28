@@ -322,6 +322,7 @@ export interface AgentLaunchConfig {
   prompt?: string;
   permissions?: "skip" | "default";
   model?: string;
+  extraArgs?: string[];
   /**
    * System prompt to pass to the agent for orchestrator context.
    * - Claude Code: --append-system-prompt
@@ -830,6 +831,9 @@ export interface OrchestratorConfig {
 export interface DefaultPlugins {
   runtime: string;
   agent: string;
+  orchestratorAgent?: string;
+  agentConfig?: AgentSpecificConfig;
+  orchestratorAgentConfig?: AgentSpecificConfig;
   workspace: string;
   notifiers: string[];
 }
@@ -856,6 +860,9 @@ export interface ProjectConfig {
   /** Override default agent */
   agent?: string;
 
+  /** Override default orchestrator agent */
+  orchestratorAgent?: string;
+
   /** Override default workspace */
   workspace?: string;
 
@@ -873,6 +880,9 @@ export interface ProjectConfig {
 
   /** Agent-specific configuration */
   agentConfig?: AgentSpecificConfig;
+
+  /** Orchestrator-specific agent configuration */
+  orchestratorAgentConfig?: AgentSpecificConfig;
 
   /** Per-project reaction overrides */
   reactions?: Record<string, Partial<ReactionConfig>>;
@@ -906,6 +916,7 @@ export interface NotifierConfig {
 export interface AgentSpecificConfig {
   permissions?: "skip" | "default";
   model?: string;
+  extraArgs?: string[];
   [key: string]: unknown;
 }
 

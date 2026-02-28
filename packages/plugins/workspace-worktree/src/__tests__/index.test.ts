@@ -332,6 +332,7 @@ describe("workspace.create()", () => {
 describe("workspace.destroy()", () => {
   it("removes worktree via git commands", async () => {
     const ws = create();
+    mockExistsSync.mockReturnValueOnce(true);
 
     // rev-parse returns the .git dir
     mockGitSuccess("/repo/path/.git");
@@ -355,28 +356,46 @@ describe("workspace.destroy()", () => {
     );
   });
 
-  it("falls back to rmSync when git commands fail", async () => {
+  it("throws when git commands fail and never falls back to rmSync", async () => {
     const ws = create();
-
-    mockGitError("not a git repository"); // rev-parse fails
     mockExistsSync.mockReturnValueOnce(true);
 
-    await ws.destroy("/mock-home/.worktrees/myproject/session-1");
+    mockGitError("not a git repository"); // rev-parse fails
 
-    expect(mockRmSync).toHaveBeenCalledWith("/mock-home/.worktrees/myproject/session-1", {
-      recursive: true,
-      force: true,
-    });
+    await expect(ws.destroy("/mock-home/.worktrees/myproject/session-1")).rejects.toThrow(
+      'Failed to destroy worktree "/mock-home/.worktrees/myproject/session-1": not a git repository',
+    );
+    expect(mockRmSync).not.toHaveBeenCalled();
   });
 
-  it("does nothing if git fails and directory does not exist", async () => {
+  it("is idempotent when workspace path is already gone", async () => {
     const ws = create();
 
-    mockGitError("not a git repository");
     mockExistsSync.mockReturnValueOnce(false);
 
-    await ws.destroy("/nonexistent/path");
+    await ws.destroy("/mock-home/.worktrees/myproject/missing");
 
+    expect(mockExecFileAsync).not.toHaveBeenCalled();
+    expect(mockRmSync).not.toHaveBeenCalled();
+  });
+
+  it("rejects destruction outside managed worktreeDir", async () => {
+    const ws = create();
+
+    await expect(ws.destroy("/repo/path")).rejects.toThrow(
+      "Refusing to destroy workspace outside managed worktreeDir: /repo/path",
+    );
+    expect(mockExecFileAsync).not.toHaveBeenCalled();
+    expect(mockRmSync).not.toHaveBeenCalled();
+  });
+
+  it("rejects destruction of worktree base dir itself", async () => {
+    const ws = create();
+
+    await expect(ws.destroy("/mock-home/.worktrees")).rejects.toThrow(
+      "Refusing to destroy workspace outside managed worktreeDir: /mock-home/.worktrees",
+    );
+    expect(mockExecFileAsync).not.toHaveBeenCalled();
     expect(mockRmSync).not.toHaveBeenCalled();
   });
 });

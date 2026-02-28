@@ -55,6 +55,7 @@ const AgentSpecificConfigSchema = z
   .object({
     permissions: z.enum(["skip", "default"]).optional(),
     model: z.string().optional(),
+    extraArgs: z.array(z.string()).optional(),
   })
   .passthrough();
 
@@ -69,12 +70,14 @@ const ProjectConfigSchema = z.object({
     .optional(),
   runtime: z.string().optional(),
   agent: z.string().optional(),
+  orchestratorAgent: z.string().optional(),
   workspace: z.string().optional(),
   tracker: TrackerConfigSchema.optional(),
   scm: SCMConfigSchema.optional(),
   symlinks: z.array(z.string()).optional(),
   postCreate: z.array(z.string()).optional(),
   agentConfig: AgentSpecificConfigSchema.optional(),
+  orchestratorAgentConfig: AgentSpecificConfigSchema.optional(),
   reactions: z.record(ReactionConfigSchema.partial()).optional(),
   agentRules: z.string().optional(),
   agentRulesFile: z.string().optional(),
@@ -84,6 +87,9 @@ const ProjectConfigSchema = z.object({
 const DefaultPluginsSchema = z.object({
   runtime: z.string().default("tmux"),
   agent: z.string().default("claude-code"),
+  orchestratorAgent: z.string().default("claude-code"),
+  agentConfig: AgentSpecificConfigSchema.optional(),
+  orchestratorAgentConfig: AgentSpecificConfigSchema.optional(),
   workspace: z.string().default("worktree"),
   notifiers: z.array(z.string()).default(["composio", "desktop"]),
 });

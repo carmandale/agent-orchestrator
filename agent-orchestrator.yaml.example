@@ -19,8 +19,15 @@ port: 3000
 defaults:
   runtime: tmux           # tmux | process | docker | kubernetes | ssh | e2b
   agent: claude-code      # claude-code | codex | aider | goose | custom
+  orchestratorAgent: claude-code # defaults to claude-code; can differ from worker agent
   workspace: worktree     # worktree | clone | copy
   notifiers: [desktop]    # desktop | slack | discord | webhook | email
+  # Shared defaults for worker agent launches
+  # agentConfig:
+  #   permissions: skip
+  # Global defaults for orchestrator launches (overrides agentConfig keys when set)
+  # orchestratorAgentConfig:
+  #   model: opus-4.6
 
 # Projects — at minimum, specify repo and path
 projects:
@@ -47,6 +54,15 @@ projects:
     # agentConfig:
     #   permissions: skip    # --dangerously-skip-permissions
     #   model: opus
+    #   extraArgs:           # passed through to agent CLI as-is
+    #     - --dangerously-bypass-approvals-and-sandbox
+
+    # Override orchestrator agent for this project
+    # orchestratorAgent: claude-code
+
+    # Orchestrator-specific overrides (merged on top of shared agentConfig)
+    # orchestratorAgentConfig:
+    #   model: opus-4.6
 
     # Inline rules included in every agent prompt for this project
     # agentRules: |
