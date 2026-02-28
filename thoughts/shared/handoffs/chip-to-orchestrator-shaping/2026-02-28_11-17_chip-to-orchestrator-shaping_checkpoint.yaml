@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+mode: checkpoint
+date: 2026-02-28T11:17:29.892Z
+session: "chip-to-orchestrator-shaping"
+outcome: "PARTIAL_PLUS"
+---
+
+goal: "Shape the Chip-to-Orchestrator pipeline: user talks to Chip on Telegram, Chip creates repo/spec, launches orchestrator, orchestrator spawns Codex workers to build it"
+now: "Shape A selected and detailed with 6 parts (A1-A6). Fit check passes 8/9 requirements. Key design decisions resolved: adaptive kickoff (rough ideas and full specs both work), anti-churn guardrails (measure output not compliance), Claude Code orchestrator + Codex workers. One open question remains: audit prior failure mode before building A6."
+
+done_this_session:
+  - "Created specs/001-chip-to-orchestrator/shaping.md — full shaping doc"
+  - "Identified 8 gaps in the Telegram→Chip→Orchestrator→Codex pipeline"
+  - "Resolved 5 design questions (orchestrator=Claude Code, workers=Codex, Chip calls CLI, webhook for notifications, convention-based spec detection)"
+  - "Shaped A1-A6: project add CLI, spec detection, system prompts, webhook config, adaptive kickoff, anti-churn guardrails"
+  - "Critical pivot: reshaped from rigid Zod-validated pipeline to adaptive approach after user flagged prior failure mode (tight controls → churn → zero output)"
+  - "R8/R9 added: agents must ship code not churn, rough ideas must not be blocked at the gate"
+
+next:
+  - "Audit existing reaction/retry logic to understand prior kill-respawn failure mode (informs A6 build)"
+  - "Decide: ready to slice, or more shaping needed?"
+  - "If slicing: break A1-A6 into vertical implementation slices"
+  - "Build ao project add (A1) — smallest, most self-contained piece"
+
+decisions:
+  - "Claude Code for orchestrator, Codex for workers (config already supports this)"
+  - "Orchestrator agent creates issues (LLM flexibility), guardrails are output-based not input-based"
+  - "Notifications flow through Chip (webhook → Chip → Telegram), not separate Telegram bot"
+  - "Adaptive kickoff: full spec → parallel workers, rough idea → single iterative agent"
+  - "Anti-churn: measure git output (commits/PRs), escalate don't kill-restart"
+  - "Convention-based spec detection: ao start looks for specs/ in project dir"
+
+questions:
+  - "What exactly caused the prior kill-respawn churn loops? Was it agent-stuck reaction? CI retry limits? Need to audit before building A6."
+
+files:
+  - "specs/001-chip-to-orchestrator/shaping.md"
+
+git:
+  branch: "main"
+  commit: "337729e0b9e8850c35f1fc75b0aa8c84664fa401"
+  remote: "https://github.com/carmandale/agent-orchestrator.git"
