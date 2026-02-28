@@ -17,6 +17,7 @@ import {
   isIssueNotFoundError,
   isRestorable,
   NON_RESTORABLE_STATUSES,
+  TERMINAL_STATUSES,
   SessionNotRestorableError,
   WorkspaceMissingError,
   type SessionManager,
@@ -277,19 +278,26 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     const defaultCommon = config.defaults.agentConfig ?? {};
     const projectCommon = project.agentConfig ?? {};
 
+    let merged: AgentSpecificConfig;
     if (role === "orchestrator") {
-      return {
+      merged = {
         ...defaultCommon,
         ...(config.defaults.orchestratorAgentConfig ?? {}),
         ...projectCommon,
         ...(project.orchestratorAgentConfig ?? {}),
       };
+    } else {
+      merged = {
+        ...defaultCommon,
+        ...projectCommon,
+      };
     }
 
-    return {
-      ...defaultCommon,
-      ...projectCommon,
-    };
+    // Belt-and-suspenders: ensure unattended sessions never block on permissions.
+    // Zod default applies at parse time, but spread-merge of empty layers can
+    // produce no permissions even when the schema has a default.
+    merged.permissions ??= "skip";
+    return merged;
   }
 
   /**
@@ -375,6 +383,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       } catch {
         // Can't get session info — keep existing values
       }
+    }
+
+    // A7: When agent exited but tmux session stays alive, mark as "done"
+    if (session.activity === "exited" && !TERMINAL_STATUSES.has(session.status)) {
+      session.status = "done";
     }
   }
 

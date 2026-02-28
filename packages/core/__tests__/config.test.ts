@@ -18,6 +18,9 @@ describe("Config Loading", () => {
     originalCwd = process.cwd();
     originalEnv = { ...process.env };
 
+    // Clear env vars that interfere with config discovery
+    delete process.env["AO_CONFIG_PATH"];
+
     // Change to test directory
     process.chdir(testDir);
   });
@@ -111,6 +114,38 @@ projects:
 
     it("should throw error if config not found", () => {
       expect(() => loadConfig()).toThrow("No agent-orchestrator.yaml found");
+    });
+  });
+
+  describe("AO_CONFIG_PATH tilde expansion and validation (A6)", () => {
+    it("should expand ~ in AO_CONFIG_PATH", () => {
+      // Create config in home-like location
+      const configDir = join(testDir, "home-config");
+      mkdirSync(configDir, { recursive: true });
+      const configPath = join(configDir, "ao.yaml");
+      writeFileSync(configPath, "projects: {}");
+
+      // Set AO_CONFIG_PATH with the full path (simulating expanded ~)
+      process.env["AO_CONFIG_PATH"] = configPath;
+
+      const found = findConfigFile();
+      expect(found).toBe(configPath);
+    });
+
+    it("should throw if AO_CONFIG_PATH points to nonexistent file", () => {
+      process.env["AO_CONFIG_PATH"] = join(testDir, "nonexistent.yaml");
+
+      expect(() => findConfigFile()).toThrow("AO_CONFIG_PATH points to nonexistent file");
+    });
+
+    it("should fall through to normal search when AO_CONFIG_PATH not set", () => {
+      delete process.env["AO_CONFIG_PATH"];
+
+      const configPath = join(testDir, "agent-orchestrator.yaml");
+      writeFileSync(configPath, "projects: {}");
+
+      const found = findConfigFile();
+      expect(found).not.toBeNull();
     });
   });
 

@@ -5,7 +5,7 @@
  * then writes the project entry using yaml parseDocument to preserve comments.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import chalk from "chalk";
@@ -16,6 +16,7 @@ import {
   validateConfig,
   expandHome,
 } from "@composio/ao-core";
+import { detectDefaultBranch } from "../lib/git-utils.js";
 
 const execFileAsync = promisify(execFileCb);
 
@@ -73,23 +74,42 @@ export function registerProjectAdd(program: Command): void {
             }
           }
 
-          // 3. Validate path exists
+          // 3. Validate path exists and is a git repository
           const expandedPath = expandHome(rawPath);
           if (!existsSync(expandedPath)) {
             throw new Error(`Path does not exist: ${expandedPath}`);
           }
+          const pathStat = statSync(expandedPath);
+          if (!pathStat.isDirectory()) {
+            throw new Error(`Path is not a directory: ${expandedPath}`);
+          }
+          try {
+            const { stdout } = await execFileAsync(
+              "git", ["-C", expandedPath, "rev-parse", "--is-inside-work-tree"],
+              { timeout: 10_000 },
+            );
+            if (stdout.trim() !== "true") {
+              throw new Error(`Path is not inside a git work tree: ${expandedPath}`);
+            }
+          } catch (err: unknown) {
+            if (err instanceof Error && err.message.includes("not inside a git work tree")) throw err;
+            throw new Error(`Path is not a git repository: ${expandedPath}`);
+          }
 
-          // 4. Load config and check for duplicate name
+          // 4. Auto-detect default branch (user's --branch flag takes precedence)
+          const detectedBranch = branch ?? await detectDefaultBranch(expandedPath);
+
+          // 5. Load config and check for duplicate name
           const { config, path: configPath } = loadConfigWithPath();
           if (config.projects[name]) {
             throw new Error(`Project "${name}" already exists in config`);
           }
 
-          // 5. Full config validation (catches basename + sessionPrefix collisions)
+          // 6. Full config validation (catches basename + sessionPrefix collisions)
           const rawYaml = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
           const rawProjects = (rawYaml.projects ?? {}) as Record<string, unknown>;
           const rawNewProject: Record<string, unknown> = { repo, path: rawPath };
-          if (branch) rawNewProject.defaultBranch = branch;
+          rawNewProject.defaultBranch = detectedBranch;
           if (sessionPrefix) rawNewProject.sessionPrefix = sessionPrefix;
           if (agent) rawNewProject.agent = agent;
           if (agentPermissions) rawNewProject.agentConfig = { permissions: agentPermissions };
@@ -97,7 +117,7 @@ export function registerProjectAdd(program: Command): void {
           rawYaml.projects = rawProjects;
           validateConfig(rawYaml);
 
-          // 6. Write using parseDocument (preserves comments and formatting)
+          // 7. Write using parseDocument (preserves comments and formatting)
           const doc = parseDocument(readFileSync(configPath, "utf-8"));
           const projectsNode = doc.get("projects", true);
           if (!projectsNode || typeof projectsNode !== "object") {
@@ -107,8 +127,8 @@ export function registerProjectAdd(program: Command): void {
           const projectEntry: Record<string, unknown> = {
             repo,
             path: rawPath,
+            defaultBranch: detectedBranch,
           };
-          if (branch) projectEntry.defaultBranch = branch;
           if (sessionPrefix) projectEntry.sessionPrefix = sessionPrefix;
           if (agent) projectEntry.agent = agent;
           if (agentPermissions) projectEntry.agentConfig = { permissions: agentPermissions };
@@ -116,7 +136,7 @@ export function registerProjectAdd(program: Command): void {
           doc.setIn(["projects", name], doc.createNode(projectEntry));
           writeFileSync(configPath, doc.toString(), "utf-8");
 
-          // 7. Print confirmation
+          // 8. Print confirmation
           const validated = validateConfig(
             parseYaml(readFileSync(configPath, "utf-8")),
           );

@@ -7,20 +7,31 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import type { Command } from "commander";
+import { parse as parseYaml } from "yaml";
 import {
   loadConfig,
+  findConfig,
   generateOrchestratorPrompt,
+  TERMINAL_STATUSES,
   type OrchestratorConfig,
   type ProjectConfig,
 } from "@composio/ao-core";
 import { exec } from "../lib/shell.js";
 import { getSessionManager } from "../lib/create-session-manager.js";
-import { findWebDir, buildDashboardEnv } from "../lib/web-dir.js";
+import {
+  findWebDir,
+  buildDashboardEnv,
+  findAvailableDashboardPort,
+  writeRunState,
+  readRunState,
+  deleteRunState,
+  type RunState,
+} from "../lib/web-dir.js";
 import {
   cleanNextCache,
   findRunningDashboardPid,
@@ -81,7 +92,7 @@ async function startDashboard(
   const child = spawn("pnpm", ["run", "dev"], {
     cwd: webDir,
     stdio: "inherit",
-    detached: false,
+    detached: true,
     env,
   });
 
@@ -144,12 +155,39 @@ export function registerStart(program: Command): void {
           const sessionId = `${project.sessionPrefix}-orchestrator`;
           const port = config.port ?? 3000;
 
+          // A5: Validate project path exists before spawning anything
+          if (!existsSync(project.path)) {
+            throw new Error(
+              `Project path does not exist: ${project.path} — was it moved or deleted?`,
+            );
+          }
+
+          // A2: Warn if defaultBranch was Zod-defaulted (no explicit key in raw YAML)
+          const configPath = findConfig();
+          if (configPath) {
+            try {
+              const rawYaml = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+              const rawProject = (rawYaml?.projects as Record<string, Record<string, unknown>> | undefined)?.[projectId];
+              if (rawProject && !("defaultBranch" in rawProject)) {
+                console.warn(
+                  chalk.yellow(
+                    `⚠ Project "${projectId}" has no explicit defaultBranch — defaulting to "main".\n` +
+                    `  Run "ao project add" again or set defaultBranch in config to fix.\n`,
+                  ),
+                );
+              }
+            } catch {
+              // Non-fatal — skip warning if raw YAML read fails
+            }
+          }
+
           console.log(chalk.bold(`\nStarting orchestrator for ${chalk.cyan(project.name)}\n`));
 
           // Start dashboard (unless --no-dashboard)
           const spinner = ora();
           let dashboardProcess: ChildProcess | null = null;
           let exists = false; // Track whether orchestrator session already exists
+          let actualPort = port; // Track resolved port for summary
 
           if (opts?.dashboard !== false) {
             const webDir = findWebDir();
@@ -181,15 +219,42 @@ export function registerStart(program: Command): void {
               await cleanNextCache(webDir);
             }
 
+            // A3: Find available dashboard port (scan configured port through +10)
+            actualPort = await findAvailableDashboardPort(port);
+            if (actualPort !== port) {
+              console.log(chalk.yellow(`Port ${port} in use — using ${actualPort} instead`));
+            }
+
             spinner.start("Starting dashboard");
             dashboardProcess = await startDashboard(
-              port,
+              actualPort,
               webDir,
               config.configPath,
               config.terminalPort,
               config.directTerminalPort,
             );
-            spinner.succeed(`Dashboard starting on http://localhost:${port}`);
+
+            // A3+A4: Write run state for reliable cleanup by `ao stop`
+            if (dashboardProcess.pid && config.configPath) {
+              const env = await buildDashboardEnv(
+                actualPort, config.configPath, config.terminalPort, config.directTerminalPort,
+              );
+              const terminalPorts = [
+                parseInt(env["TERMINAL_PORT"], 10),
+                parseInt(env["DIRECT_TERMINAL_PORT"], 10),
+              ].filter((p) => !isNaN(p));
+              writeRunState(config.configPath, projectId, {
+                configPath: config.configPath,
+                projectName: projectId,
+                dashboardPid: dashboardProcess.pid,
+                dashboardPort: actualPort,
+                terminalPorts,
+                startedAt: new Date().toISOString(),
+                pgid: dashboardProcess.pid, // detached spawn: PID === PGID
+              });
+            }
+
+            spinner.succeed(`Dashboard starting on http://localhost:${actualPort}`);
             console.log(chalk.dim("  (Dashboard will be ready in a few seconds)\n"));
           }
 
@@ -200,7 +265,7 @@ export function registerStart(program: Command): void {
 
             // Check if orchestrator session already exists
             const existing = await sm.get(sessionId);
-            exists = existing !== null && existing.status !== "killed";
+            exists = existing !== null && !TERMINAL_STATUSES.has(existing.status);
 
             if (exists && opts?.prompt) {
               throw new Error(
@@ -259,7 +324,7 @@ export function registerStart(program: Command): void {
           console.log(chalk.bold.green("\n✓ Startup complete\n"));
 
           if (opts?.dashboard !== false) {
-            console.log(chalk.cyan("Dashboard:"), `http://localhost:${port}`);
+            console.log(chalk.cyan("Dashboard:"), `http://localhost:${actualPort}`);
           }
 
           if (opts?.orchestrator !== false && !exists) {
@@ -303,7 +368,7 @@ export function registerStop(program: Command): void {
     .action(async (projectArg?: string) => {
       try {
         const config = loadConfig();
-        const { projectId: _projectId, project } = resolveProject(config, projectArg);
+        const { projectId, project } = resolveProject(config, projectArg);
         const sessionId = `${project.sessionPrefix}-orchestrator`;
         const port = config.port ?? 3000;
 
@@ -321,8 +386,40 @@ export function registerStop(program: Command): void {
           console.log(chalk.yellow(`Orchestrator session "${sessionId}" is not running`));
         }
 
-        // Stop dashboard
-        await stopDashboard(port);
+        // A4: Stop dashboard + terminal WS servers via run state
+        const runState = config.configPath
+          ? readRunState(config.configPath, projectId)
+          : null;
+
+        if (runState) {
+          // Verify PID liveness before killing
+          let pidAlive = false;
+          try {
+            process.kill(runState.pgid, 0); // signal 0 = check existence
+            pidAlive = true;
+          } catch {
+            // PID doesn't exist — stale run state
+          }
+
+          if (pidAlive) {
+            try {
+              // Kill process group (dashboard + all terminal WS children)
+              process.kill(-runState.pgid, "SIGTERM");
+              console.log(chalk.green(`Dashboard stopped (process group ${runState.pgid})`));
+            } catch {
+              console.log(chalk.yellow("Could not stop dashboard process group (may already be stopped)"));
+            }
+          } else {
+            console.log(chalk.yellow("Dashboard PID is stale — already stopped"));
+          }
+          if (config.configPath) {
+            deleteRunState(config.configPath, projectId);
+          }
+        } else {
+          // Legacy fallback: no run state file — try lsof on configured port
+          console.log(chalk.dim("No run state found — falling back to port-based cleanup"));
+          await stopDashboard(port);
+        }
 
         console.log(chalk.bold.green("\n✓ Orchestrator stopped\n"));
       } catch (err) {

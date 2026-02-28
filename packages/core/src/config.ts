@@ -53,7 +53,7 @@ const NotifierConfigSchema = z
 
 const AgentSpecificConfigSchema = z
   .object({
-    permissions: z.enum(["skip", "default"]).optional(),
+    permissions: z.enum(["skip", "default"]).default("skip"),
     model: z.string().optional(),
     extraArgs: z.array(z.string()).optional(),
   })
@@ -295,10 +295,16 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
 export function findConfigFile(startDir?: string): string | null {
   // 1. Check environment variable override
   if (process.env["AO_CONFIG_PATH"]) {
-    const envPath = resolve(process.env["AO_CONFIG_PATH"]);
-    if (existsSync(envPath)) {
-      return envPath;
+    const expanded = resolve(expandHome(process.env["AO_CONFIG_PATH"]));
+    if (!existsSync(expanded)) {
+      throw new Error(
+        `AO_CONFIG_PATH points to nonexistent file: ${expanded}` +
+        (expanded !== process.env["AO_CONFIG_PATH"]
+          ? ` (expanded from: ${process.env["AO_CONFIG_PATH"]})`
+          : ""),
+      );
     }
+    return expanded;
   }
 
   // 2. Search up directory tree from CWD (like git)

@@ -6,6 +6,7 @@ import {
   rmSync,
   mkdirSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -19,6 +20,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** Create a directory and `git init` it so A1 validation passes. */
+function mkGitDir(dirPath: string): void {
+  mkdirSync(dirPath, { recursive: true });
+  execFileSync("git", ["init"], { cwd: dirPath, stdio: "ignore" });
+}
+
 /**
  * Helper: create a temp dir with a minimal config file and a fake project path.
  * Returns { configPath, projectPath }.
@@ -27,7 +34,7 @@ function setupEnv(extraYaml = ""): { configPath: string; projectPath: string } {
   tmpDir = mkdtempSync(join(tmpdir(), "ao-project-add-test-"));
 
   const projectPath = join(tmpDir, "my-repo");
-  mkdirSync(projectPath);
+  mkGitDir(projectPath);
 
   const configPath = join(tmpDir, "agent-orchestrator.yaml");
   const baseYaml = `# Test config
@@ -56,7 +63,7 @@ describe("ao project add", () => {
   it("adds a project to the YAML file correctly", async () => {
     const { configPath, projectPath } = setupEnv();
     const newProjectPath = join(tmpDir, "new-app");
-    mkdirSync(newProjectPath);
+    mkGitDir(newProjectPath);
 
     const program = makeProgram();
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -160,7 +167,7 @@ describe("ao project add", () => {
   it("handles optional flags (branch, session-prefix, agent)", async () => {
     const { configPath } = setupEnv();
     const newProjectPath = join(tmpDir, "flagged-app");
-    mkdirSync(newProjectPath);
+    mkGitDir(newProjectPath);
 
     const program = makeProgram();
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -196,7 +203,7 @@ describe("ao project add", () => {
   it("preserves existing YAML comments", async () => {
     const { configPath } = setupEnv();
     const newProjectPath = join(tmpDir, "comment-test");
-    mkdirSync(newProjectPath);
+    mkGitDir(newProjectPath);
 
     const program = makeProgram();
     vi.spyOn(console, "log").mockImplementation(() => {});

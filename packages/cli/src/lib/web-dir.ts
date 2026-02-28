@@ -3,11 +3,20 @@
  * Shared utility to avoid duplication between dashboard.ts and start.ts.
  */
 
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolve, dirname } from "node:path";
-import { existsSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -106,6 +115,86 @@ export async function buildDashboardEnv(
   env["NEXT_PUBLIC_DIRECT_TERMINAL_PORT"] = String(resolvedDirect);
 
   return env;
+}
+
+// =============================================================================
+// RUN STATE — persists dashboard port + PIDs for reliable cleanup
+// =============================================================================
+
+const RUN_STATE_DIR = join(homedir(), ".agent-orchestrator", "run");
+
+/** Hash-based run state filename to prevent path injection from unconstrained project keys. */
+function runStateFilename(configPath: string, projectName: string): string {
+  const hash = createHash("sha256")
+    .update(`${configPath}:${projectName}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `${hash}.json`;
+}
+
+export interface RunState {
+  configPath: string;
+  projectName: string;
+  dashboardPid: number;
+  dashboardPort: number;
+  terminalPorts: number[];
+  startedAt: string;
+  pgid: number;
+}
+
+/** Write run state atomically (write to .tmp, rename). */
+export function writeRunState(configPath: string, projectName: string, state: RunState): void {
+  mkdirSync(RUN_STATE_DIR, { recursive: true, mode: 0o700 });
+  const filename = runStateFilename(configPath, projectName);
+  const filepath = join(RUN_STATE_DIR, filename);
+  const tmpPath = `${filepath}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
+  renameSync(tmpPath, filepath);
+}
+
+/** Read run state, or null if missing/corrupt. */
+export function readRunState(configPath: string, projectName: string): RunState | null {
+  const filename = runStateFilename(configPath, projectName);
+  const filepath = join(RUN_STATE_DIR, filename);
+  if (!existsSync(filepath)) return null;
+  try {
+    return JSON.parse(readFileSync(filepath, "utf-8")) as RunState;
+  } catch {
+    return null;
+  }
+}
+
+/** Delete run state file. */
+export function deleteRunState(configPath: string, projectName: string): void {
+  const filename = runStateFilename(configPath, projectName);
+  const filepath = join(RUN_STATE_DIR, filename);
+  try {
+    unlinkSync(filepath);
+  } catch {
+    // Already gone — fine
+  }
+}
+
+// =============================================================================
+// DASHBOARD PORT SCANNING
+// =============================================================================
+
+/**
+ * Find an available dashboard port, starting from `preferred`.
+ * Scans preferred through preferred+10. Returns the first available port.
+ * Throws if no port is available in the range.
+ */
+export async function findAvailableDashboardPort(preferred: number): Promise<number> {
+  for (let offset = 0; offset <= 10; offset++) {
+    const port = preferred + offset;
+    if (await isPortAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(
+    `No available port in range ${preferred}–${preferred + 10}. ` +
+    `Free a port or set a different port in agent-orchestrator.yaml.`,
+  );
 }
 
 /**
