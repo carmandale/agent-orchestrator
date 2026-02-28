@@ -1,6 +1,10 @@
 /**
  * Orchestrator Prompt Generator — generates orchestrator prompt content.
  *
+ * Two modes:
+ * - Coordinator mode (default): orchestrator manages worker sessions, doesn't write code
+ * - Discover-first mode (--prompt): orchestrator IS the builder, explores and ships code
+ *
  * This is injected via `ao start` to provide orchestrator-specific context
  * when the orchestrator agent runs.
  */
@@ -11,14 +15,124 @@ export interface OrchestratorPromptConfig {
   config: OrchestratorConfig;
   projectId: string;
   project: ProjectConfig;
+  prompt?: string;
 }
 
 /**
  * Generate orchestrator prompt content.
- * Provides orchestrator agent with context about available commands,
- * session management workflows, and project configuration.
+ *
+ * If `prompt` is provided, generates a discover-first prompt where the
+ * orchestrator explores the repo and builds directly.
+ * Otherwise, generates the coordinator prompt for managing worker sessions.
  */
 export function generateOrchestratorPrompt(opts: OrchestratorPromptConfig): string {
+  const { prompt } = opts;
+
+  if (prompt) {
+    return generateDiscoverFirstPrompt(opts as OrchestratorPromptConfig & { prompt: string });
+  }
+
+  return generateCoordinatorPrompt(opts);
+}
+
+// =============================================================================
+// Shared helpers
+// =============================================================================
+
+function generateProjectInfoSection(
+  config: OrchestratorConfig,
+  project: ProjectConfig,
+): string {
+  return `## Project Info
+
+- **Name**: ${project.name}
+- **Repository**: ${project.repo}
+- **Default Branch**: ${project.defaultBranch}
+- **Session Prefix**: ${project.sessionPrefix}
+- **Local Path**: ${project.path}
+- **Dashboard Port**: ${config.port ?? 3000}`;
+}
+
+function generateCLICommandsTable(config: OrchestratorConfig): string {
+  return `| Command | Description |
+|---------|-------------|
+| \`ao status\` | Show all sessions with PR/CI/review status |
+| \`ao spawn <project> [issue]\` | Spawn a single worker agent session |
+| \`ao batch-spawn <project> <issues...>\` | Spawn multiple sessions in parallel |
+| \`ao session ls [-p project]\` | List all sessions (optionally filter by project) |
+| \`ao session attach <session>\` | Attach to a session's tmux window |
+| \`ao session kill <session>\` | Kill a specific session |
+| \`ao session cleanup [-p project]\` | Kill completed/merged sessions |
+| \`ao send <session> <message>\` | Send a message to a running session |
+| \`ao dashboard\` | Start the web dashboard (http://localhost:${config.port ?? 3000}) |
+| \`ao open <project>\` | Open all project sessions in terminal tabs |`;
+}
+
+// =============================================================================
+// Discover-first prompt (--prompt mode)
+// =============================================================================
+
+function generateDiscoverFirstPrompt(
+  opts: OrchestratorPromptConfig & { prompt: string },
+): string {
+  const { config, project, prompt } = opts;
+  const sections: string[] = [];
+
+  // Header
+  sections.push(`# ${project.name} — Build Agent
+
+You are building ${project.name}.`);
+
+  // User's prompt
+  sections.push(`## What the user wants
+
+${prompt}`);
+
+  // Discover-first approach
+  sections.push(`## Your approach
+
+BEFORE doing anything else:
+- Explore the repo. Read README, existing files, tools, CI config.
+- Understand what already exists that you can use.
+- Match your approach to what the project actually needs.
+
+Then start building:
+- Write code, commit, push, iterate.
+- You can create issues and spawn workers later if the work becomes clear.
+- But start by DOING, not by planning.`);
+
+  // Critical rules
+  sections.push(`## Critical rules
+
+- Don't over-engineer. Build the simplest thing that works.
+- Don't build validation harnesses, coordinator watchers, or elaborate pipelines.
+- The measure of success is code shipped (commits, PRs), not infrastructure.
+- If stuck after a real attempt, report what's wrong. Don't retry the same approach.
+- Match solution weight to problem weight. A 4-command task gets 4 commands.`);
+
+  // CLI commands (for when ready to parallelize)
+  sections.push(`## Available tools (use when ready to parallelize)
+
+${generateCLICommandsTable(config)}`);
+
+  // Project info
+  sections.push(generateProjectInfoSection(config, project));
+
+  // Project-specific rules (if any)
+  if (project.orchestratorRules) {
+    sections.push(`## Project-Specific Rules
+
+${project.orchestratorRules}`);
+  }
+
+  return sections.join("\n\n");
+}
+
+// =============================================================================
+// Coordinator prompt (default mode — existing behavior)
+// =============================================================================
+
+function generateCoordinatorPrompt(opts: OrchestratorPromptConfig): string {
   const { config, projectId, project } = opts;
   const sections: string[] = [];
 
@@ -30,14 +144,7 @@ You are the **orchestrator agent** for the ${project.name} project.
 Your role is to coordinate and manage worker agent sessions. You do NOT write code yourself — you spawn worker agents to do the implementation work, monitor their progress, and intervene when they need help.`);
 
   // Project Info
-  sections.push(`## Project Info
-
-- **Name**: ${project.name}
-- **Repository**: ${project.repo}
-- **Default Branch**: ${project.defaultBranch}
-- **Session Prefix**: ${project.sessionPrefix}
-- **Local Path**: ${project.path}
-- **Dashboard Port**: ${config.port ?? 3000}`);
+  sections.push(generateProjectInfoSection(config, project));
 
   // Quick Start
   sections.push(`## Quick Start
@@ -66,18 +173,7 @@ ao open ${projectId}
   // Available Commands
   sections.push(`## Available Commands
 
-| Command | Description |
-|---------|-------------|
-| \`ao status\` | Show all sessions with PR/CI/review status |
-| \`ao spawn <project> [issue]\` | Spawn a single worker agent session |
-| \`ao batch-spawn <project> <issues...>\` | Spawn multiple sessions in parallel |
-| \`ao session ls [-p project]\` | List all sessions (optionally filter by project) |
-| \`ao session attach <session>\` | Attach to a session's tmux window |
-| \`ao session kill <session>\` | Kill a specific session |
-| \`ao session cleanup [-p project]\` | Kill completed/merged sessions |
-| \`ao send <session> <message>\` | Send a message to a running session |
-| \`ao dashboard\` | Start the web dashboard (http://localhost:${config.port ?? 3000}) |
-| \`ao open <project>\` | Open all project sessions in terminal tabs |`);
+${generateCLICommandsTable(config)}`);
 
   // Session Management
   sections.push(`## Session Management

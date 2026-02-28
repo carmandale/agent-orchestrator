@@ -127,6 +127,7 @@ export function registerStart(program: Command): void {
     .option("--no-dashboard", "Skip starting the dashboard server")
     .option("--no-orchestrator", "Skip starting the orchestrator agent")
     .option("--rebuild", "Clean and rebuild dashboard before starting")
+    .option("--prompt <text>", "Start with an inline prompt (rough idea mode)")
     .action(
       async (
         projectArg?: string,
@@ -134,6 +135,7 @@ export function registerStart(program: Command): void {
           dashboard?: boolean;
           orchestrator?: boolean;
           rebuild?: boolean;
+          prompt?: string;
         },
       ) => {
         try {
@@ -200,6 +202,15 @@ export function registerStart(program: Command): void {
             const existing = await sm.get(sessionId);
             exists = existing !== null && existing.status !== "killed";
 
+            if (exists && opts?.prompt) {
+              throw new Error(
+                `Orchestrator session "${sessionId}" is already running.\n` +
+                  `To start with a new prompt, stop the existing session first:\n` +
+                  `  ao stop ${projectArg ?? ""}\n` +
+                  `  ao start ${projectArg ?? ""} --prompt "..."`,
+              );
+            }
+
             if (exists) {
               if (existing?.runtimeHandle?.id) {
                 tmuxTarget = existing.runtimeHandle.id;
@@ -212,7 +223,12 @@ export function registerStart(program: Command): void {
             } else {
               try {
                 spinner.start("Creating orchestrator session");
-                const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
+                const systemPrompt = generateOrchestratorPrompt({
+                  config,
+                  projectId,
+                  project,
+                  prompt: opts?.prompt,
+                });
 
                 const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
                 if (session.runtimeHandle?.id) {
