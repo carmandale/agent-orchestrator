@@ -89,7 +89,7 @@ Done (or User redirects via Chip)
 |------|-----------|
 | **A1** | **`ao project add`** — CLI command that appends a project to `agent-orchestrator.yaml`. Takes `--repo`, `--path`, `--branch`, `--session-prefix`. Validates repo exists, path exists. Writes YAML. |
 | **A2** | **`ao start <project> --from-spec <path>`** — Starts orchestrator agent with spec context. Writes spec content into the orchestrator's system prompt (or a referenced file). Orchestrator agent launches with instructions to decompose and build. |
-| **A3** | **Orchestrator system prompt: spec-aware decomposition** — System prompt template that tells the orchestrator agent: read the spec artifacts, create GitHub issues from tasks.md, spawn a Codex worker per issue, monitor lifecycle, report back. |
+| 🟡 **A3** | **Orchestrator system prompt: discover-first, weight-matched.** Prompt templates (full-spec mode + rough-idea mode) that instruct the orchestrator to: explore the repo before prescribing, match solution weight to problem weight, think when stuck instead of retrying, ship code not infrastructure, escalate don't loop. The prompt is the primary defense against the harness anti-pattern. |
 | **A4** | **Webhook notifier config for Chip** — Chip runs a lightweight HTTP listener on localhost. Orchestrator's webhook notifier posts events to `http://localhost:<port>/ao-events`. Already supported by existing webhook notifier plugin — just needs config. |
 | 🟡 **A5** | **Adaptive kickoff — match agent strategy to spec maturity.** When full `tasks.md` exists: orchestrator creates issues and spawns parallel workers. When only rough context exists: orchestrator works as a single iterative agent that builds, commits, and progresses. Either way, the measure of success is commits pushed, not pipeline steps completed. No Zod gates, no validation that blocks work from starting. |
 | 🟡 **A6** | **Anti-churn guardrails: measure output, not compliance.** Lifecycle tracks commits/PRs per session. If a session has been alive 10+ min with zero git activity, that's the signal — not "failed to parse tasks.md." Stuck detection nudges the agent or escalates to Chip, rather than killing and respawning into the same wall. |
@@ -126,24 +126,75 @@ This:
 
 **A3: Orchestrator System Prompt**
 
-The orchestrator agent gets a system prompt like:
+The orchestrator system prompt is the most critical piece of the pipeline. The prior failure was an orchestrator that built an elaborate 665-line bash harness instead of thinking. The prompt must produce an agent that **discovers before prescribing** and **matches solution weight to problem weight.**
+
+**Core principles the prompt must encode:**
+
+1. **Discover first.** Before creating issues, spawning workers, or writing any automation: explore the repo. Read the README. Look at existing tools, scripts, CI. Understand what's already there.
+2. **Match weight.** A 4-command task gets 4 commands, not a 665-line orchestration harness. The complexity of the solution must never exceed the complexity of the problem.
+3. **Think when stuck.** If a worker fails, don't re-run the same thing. Read the error. Ask: "Is this check even valid? Does this field exist? Is there a simpler approach?"
+4. **Ship, don't validate.** The goal is commits pushed and PRs merged, not pipeline steps completed. Prefer doing the work over building infrastructure to track the work.
+5. **Escalate, don't loop.** If something isn't working after a real attempt, tell Chip what's wrong and what you've tried. Don't retry the same approach.
+
+**Full-spec mode prompt (tasks.md exists):**
 
 ```
-You are managing the build of a new project. Here are the spec artifacts:
+You are building [project name]. Here is the context:
 
 [spec.md contents]
 [plan.md contents]
 [tasks.md contents]
 
-Your job:
+BEFORE doing anything else:
+- Explore the repo. Read README, look at existing scripts, tools, CI config.
+- Understand what already exists that you can use.
+- Match your approach to what the project actually needs.
+
+Then:
 1. Create a GitHub issue for each task in tasks.md
 2. For each issue, run: ao spawn <project> --issue <number>
 3. Monitor sessions via: ao status
 4. When all sessions complete, report summary
-5. If a session is stuck or errored, investigate and report
 
-Use Codex workers. They run in parallel. Each gets its own worktree.
+CRITICAL RULES:
+- If a worker is stuck, READ the error. Ask: is this check valid? Is there
+  a simpler approach? Don't just retry.
+- Never build elaborate validation harnesses. If the task is "run 4 commands,"
+  spawn a worker that runs 4 commands.
+- The measure of success is code shipped (commits, PRs), not steps completed.
+- If stuck after a real attempt, report to Chip with context. Don't loop.
 ```
+
+**Rough-idea mode prompt (no tasks.md):**
+
+```
+You are building [project name]. Here is what the user wants:
+
+[prompt or spec.md contents]
+
+BEFORE doing anything else:
+- Explore the repo. Read README, look at existing scripts, tools, CI config.
+- Understand what already exists that you can use.
+
+Then start building. You are a single iterative agent:
+- Scaffold the project if needed
+- Write code, commit, push, iterate
+- You can create issues and spawn workers later if the work becomes clear enough
+- But start by DOING, not by planning
+
+CRITICAL RULES:
+- Don't over-engineer. Build the simplest thing that works, then iterate.
+- The measure of success is code shipped, not infrastructure built.
+- If stuck, report to Chip with context. Don't loop.
+```
+
+**The anti-pattern the prompt prevents:**
+
+The prior orchestrator received "increment build and upload apps to TestFlight" and built: 5 GitHub issues, a coordinator-watcher polling comments every 20s, strict schema enforcement, preflight checklists for nonexistent metadata fields, and repo state snapshots that blocked on any change. 665 lines of bash. Zero apps uploaded.
+
+What should have happened: agent explores repo, finds `gj upload`, runs 4 commands per app. Done.
+
+The prompt must make the agent default to **the simple thing** and treat elaborate infrastructure as a last resort, not a first instinct.
 
 **A4: Webhook → Chip**
 
@@ -166,7 +217,9 @@ Chip runs a listener on port 9876. Already supported — webhook notifier exists
 
 **A5: Adaptive Kickoff**
 
-The key insight: **match the strategy to the input, don't force all input through the same pipe.**
+Two key insights:
+1. **Match strategy to input maturity** — don't force all input through the same pipe.
+2. **Match strategy to task complexity** — the prior failure was an orchestrator that built 665 lines of bash for a 4-command task. The kickoff must set the orchestrator's expectations about the weight of the work.
 
 Two modes, selected automatically based on what exists in the project:
 
@@ -204,11 +257,23 @@ ao start my-new-app
 
 The orchestrator agent always gets all available context. The system prompt adapts based on what's present, but never *blocks* based on what's missing.
 
+**What the kickoff passes to the orchestrator (both modes):**
+
+The A3 system prompt is assembled by `ao start` with all available context. Critically, the prompt includes the "discover first" and "match weight" principles from A3. The kickoff doesn't just hand off context — it sets the agent's mindset. The difference between the prior failure and the desired behavior is entirely in what the prompt tells the agent to do with the context it receives.
+
 **A6: Anti-Churn Guardrails**
 
-The prior failure: tight controls → every session fails/blocks → respawn → same wall → nothing ships.
+A6 is the backstop. A3 (the prompt) is the primary defense — if the orchestrator discovers before prescribing and matches solution weight to problem weight, most churn never happens. A6 catches what the prompt doesn't.
 
-The fix: **measure output, not compliance.**
+**Two layers of defense:**
+
+**Layer 1: A3 prevents the root cause (orchestrator builds harnesses instead of thinking)**
+
+The prior failure wasn't "stuck detection was too slow." It was: the orchestrator built 665 lines of bash that checked for nonexistent metadata fields, and no amount of retry/escalation could fix bad instructions. A3's discover-first prompt is the primary fix.
+
+**Layer 2: A6 detects symptoms when the root cause slips through**
+
+Even with good prompting, agents can get stuck. A6 measures output, not compliance:
 
 **What "stuck" actually means:**
 - Session alive 10+ min with zero git commits → stuck (not "failed to validate")
@@ -236,6 +301,12 @@ spawn → fail → respawn → fail → respawn → fail → ... (infinite churn
 spawn → work → stuck? → nudge → still stuck? → escalate to human → human decides
 ```
 
+**Why A6 alone is insufficient:**
+
+Retry caps and output measurement are necessary but not sufficient. If the orchestrator has already built the wrong thing (a validation harness, a coordinator-watcher, an elaborate pass/fail pipeline), detecting "no commits in 10 min" tells you the symptom, not the cause. The agent will get nudged, retry the same broken approach, and escalate. The human then has to debug what the agent built.
+
+A3 prevents the agent from building the wrong thing in the first place. A6 catches the cases where it still happens.
+
 ---
 
 ## Fit Check
@@ -255,7 +326,7 @@ spawn → work → stuck? → nudge → still stuck? → escalate to human → h
 
 **Notes:**
 - R7 fails because intervention requires Chip to translate user intent into `ao` CLI commands (`ao send`, `ao kill`, `ao spawn`). The orchestrator already supports these commands, but the mechanism for Chip to know the CLI vocabulary and map user intent is Chip's responsibility, not ours. We document the commands; Chip implements the mapping.
-- 🟡 R8 passes via A6: anti-churn guardrails measure git output (commits, PRs) not pipeline compliance. Stuck = no git activity for 10+ min, not "validation failed." Escalates to Chip rather than kill-respawn loops.
+- 🟡 R8 passes via A3 + A6: the orchestrator prompt (A3) is the primary defense — it instructs the agent to discover before prescribing, match solution weight to problem weight, and think when stuck. A6 provides the backstop — if code still isn't shipping despite good prompting, detect it and escalate.
 - 🟡 R9 passes via A5: adaptive kickoff matches strategy to input maturity. Full tasks.md → parallel workers. Rough idea → single iterative agent. No gates that block rough ideas from starting.
 
 ---
@@ -266,7 +337,7 @@ spawn → work → stuck? → nudge → still stuck? → escalate to human → h
 |---|------|------|--------|
 | 1 | A1 | `ao project add` CLI command | Small — YAML read/write + validation |
 | 2 | A2 | `ao start` spec detection — auto-detect `specs/` in project dir, adapt system prompt | Small — file detection + prompt assembly |
-| 3 | A3 | Orchestrator system prompt templates — one for full-spec mode, one for rough-idea mode | Small — prompt engineering, no code |
+| 🟡 3 | A3 | Orchestrator system prompt templates — discover-first, weight-matched, two modes (full-spec + rough-idea). Primary defense against harness anti-pattern. | Medium — prompt engineering + testing against real tasks to verify agent behavior |
 | 4 | A4 | Documentation: "Chip integration guide" — CLI commands, webhook config, expected flow | Small |
 | 🟡 5 | A5 | Adaptive kickoff logic in `ao start` — detect spec maturity, select mode, pass context | Medium — mode detection, prompt assembly, context packaging |
 | 🟡 6 | A6 | Output-based stuck detection — track git activity per session, escalate on zero output | Medium — new metric in lifecycle manager, escalation to Chip via webhook |
@@ -295,6 +366,28 @@ spawn → work → stuck? → nudge → still stuck? → escalate to human → h
 
 4. **Deterministic vs. adaptive?** → **Adaptive.** R8's real concern is "nothing ships" not "agent deviated from plan." Guardrails measure output (commits, PRs), not compliance. The orchestrator agent has latitude to interpret and adjust.
 
+## Resolved: Prior Failure Mode Audit
+
+**Evidence:** `GJ-testflight-release/scripts/tf-release-orchestrate` (265 lines) + `tf-coordinator-watch` (400 lines).
+
+**The task:** "Increment build and upload apps to TestFlight." Required 4 steps per app: resolve packages, commit, push, upload via `gj upload`.
+
+**What the orchestrator actually built:**
+- 5 separate GitHub issues for a single task
+- A coordinator-watcher polling issue comments every 20s for structured status reports
+- Strict schema enforcement requiring `Status:`, `Build:`, `Uploaded:` in exact format
+- A preflight checklist checking for `marketing_version`, `app_store_metadata` — **things that don't exist in the repos**
+- Repo state snapshots before/after that BLOCK if anything changed (defeating the purpose)
+- Workers that could only run the prescribed checklist, post a structured comment, and wait
+
+**Why nothing shipped:** Workers hit the preflight checklist, which checked for nonexistent metadata fields → BLOCKED. Workers couldn't think "this field doesn't exist because it's not needed" — they just ran the checklist. When user said "simplify," orchestrator reran the same harness.
+
+**Root cause:** The orchestrator agent built an elaborate validation harness instead of looking at the repo, discovering existing tools (`gj`), and doing the simple thing. The harness itself was the problem — not retries, not timeouts, not the lifecycle manager. The workers were slaves to a script that defined what to check, and what it checked was wrong.
+
+**The anti-pattern is the harness itself.** 665 lines of bash for a 4-command task. Every joint in the Rube Goldberg machine was a potential blocker, and none of the joints could think.
+
+**Key insight → A3 (primary) + A6 (backstop):** The fix is not "better retry caps" or "measure git output." The fix is in the orchestrator system prompt (A3): **the orchestrator must discover before prescribing, and must never build elaborate validation harnesses for simple tasks.** The weight of the solution must match the weight of the problem. A6's output-based stuck detection is the backstop for when the prompt isn't enough.
+
 ## Open Questions
 
-1. **Prior failure mode audit** — The user experienced a specific failure pattern with this orchestrator (tight controls → churn → zero output). Before building A6, we should audit the existing reaction/retry logic to understand exactly what caused the kill-respawn loops. Was it the `agent-stuck` reaction? CI retry limits? Something else?
+(None — all questions resolved. Shape is ready to slice.)
