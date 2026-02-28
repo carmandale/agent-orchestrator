@@ -41,28 +41,59 @@ V1 (spec 001) works end-to-end: Chip can register a project, start an orchestrat
 | R3 | Dashboard must detect port collision and either find an available port or fail clearly | Must-have |
 | R4 | `ao stop` must clean up ALL spawned processes including terminal WS servers | Must-have |
 | R5 | `ao start` must validate project path exists before spawning anything | Must-have |
-| R6 | `AO_CONFIG_PATH` must expand `~` to home directory | Must-have |
+| R6 | `AO_CONFIG_PATH` must expand `~` to home directory and fail loudly if invalid | Must-have |
 | R7 | When agent process exits but tmux session stays, status must reflect "completed" not ambiguous "exited while running" | Must-have |
 
 ---
 
 ## Shape A: Systematic Fixes
 
-Each part maps 1:1 to a requirement. All fixes are independent — no ordering dependencies between them.
+Each part maps 1:1 to a requirement. A3 and A4 are coupled (shared run state file) but each addresses a distinct requirement.
 
 ### A0: Default `permissions: skip` for Unattended Sessions
 
-**Problem:** `AgentSpecificConfig.permissions` is optional with no default (`packages/core/src/types.ts:931`). When not set, Claude Code launches in interactive permission mode — prompts for approval, blocks forever in unattended sessions.
+**Problem:** `AgentSpecificConfig.permissions` is optional with no default (`packages/core/src/types.ts:931`). When not set, Claude Code launches in interactive permission mode — prompts for approval, blocks forever in unattended sessions. Additionally, `getAgentConfig()` in `session-manager.ts:276` merges optional config objects via spread — if none of the layers set `permissions`, the merged result still has no `permissions` field even with a Zod default, because the Zod schema only applies at parse time, not at merge time.
 
-**Mechanism:** In `spawnOrchestrator()` and `spawnWorker()` (or the agent launch path), if `permissions` is not explicitly set in config, default to `"skip"`. This ensures unattended sessions never block on permission prompts.
+**Mechanism:** Two layers of defense:
 
-**Where:** `packages/core/src/config.ts` — add Zod default to `permissions` field in `AgentSpecificConfig`:
+1. **Zod schema default** — `packages/core/src/config.ts`: add `.default("skip")` to the `permissions` field in `AgentSpecificConfig` schema. Catches config parsed from YAML.
+
+2. **Runtime fallback** — `packages/core/src/session-manager.ts` in `getAgentConfig()`: after the spread merge, add `permissions ??= "skip"` as the final fallback. Catches cases where all config layers are empty/undefined.
 
 ```typescript
-permissions: z.enum(["skip", "default"]).default("skip"),
+// In getAgentConfig(), after the spread merge (both worker and orchestrator paths):
+function getAgentConfig(project: ProjectConfig, role: AgentRole): AgentSpecificConfig {
+  const defaultCommon = config.defaults.agentConfig ?? {};
+  const projectCommon = project.agentConfig ?? {};
+
+  let merged: AgentSpecificConfig;
+  if (role === "orchestrator") {
+    merged = {
+      ...defaultCommon,
+      ...(config.defaults.orchestratorAgentConfig ?? {}),
+      ...projectCommon,
+      ...(project.orchestratorAgentConfig ?? {}),
+    };
+  } else {
+    merged = { ...defaultCommon, ...projectCommon };
+  }
+
+  // Belt-and-suspenders: ensure unattended sessions never block on permissions
+  merged.permissions ??= "skip";
+  return merged;
+}
 ```
 
-**Scope:** One line in the Zod schema. All downstream consumers already handle the `"skip"` value correctly.
+**Where:**
+- `packages/core/src/config.ts` — Zod schema default
+- `packages/core/src/session-manager.ts:276-293` — runtime fallback in both worker and orchestrator code paths
+
+**Scope:** ~5 lines across 2 files.
+
+**Tests:** Add tests in `session-manager.test.ts`:
+- Spawn worker with no permissions config → launch command includes `--dangerously-skip-permissions`
+- Spawn orchestrator with no permissions config → launch command includes `--dangerously-skip-permissions`
+- Explicit `permissions: "default"` in config → respected (not overridden by fallback)
 
 ---
 
@@ -70,69 +101,152 @@ permissions: z.enum(["skip", "default"]).default("skip"),
 
 **Problem:** `project-add.ts:77-80` validates path exists (`existsSync`) but not that it's a git repository. Non-git paths are accepted, then fail later during workspace creation with opaque errors.
 
-**Mechanism:** After the `existsSync` check, verify `.git` exists at the path (or run `git rev-parse --git-dir` in the directory). Fail early with a clear message: `"Path exists but is not a git repository: /path/to/dir"`.
+**Mechanism:** After the `existsSync` check, run `git -C <path> rev-parse --is-inside-work-tree` using `execFileAsync`. This is authoritative (handles bare repos, submodules, worktrees) unlike a `.git` directory check. Assert that stdout is exactly `"true"` — edge cases can produce different output. Also assert path is a directory (not a file).
 
-**Where:** `packages/cli/src/commands/project-add.ts`, after line 80. Add:
+**Where:** `packages/cli/src/commands/project-add.ts`, after line 80:
 
 ```typescript
-const gitDir = path.join(expandedPath, ".git");
-if (!existsSync(gitDir)) {
-  throw new Error(`Path is not a git repository (no .git directory): ${expandedPath}`);
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { statSync } from "node:fs";
+const execFileAsync = promisify(execFile);
+
+// After existsSync check:
+const stat = statSync(expandedPath);
+if (!stat.isDirectory()) {
+  throw new Error(`Path is not a directory: ${expandedPath}`);
+}
+try {
+  const { stdout } = await execFileAsync(
+    "git", ["-C", expandedPath, "rev-parse", "--is-inside-work-tree"],
+    { timeout: 10_000 },
+  );
+  if (stdout.trim() !== "true") {
+    throw new Error(`Path is not inside a git work tree: ${expandedPath}`);
+  }
+} catch (err: unknown) {
+  if (err instanceof Error && err.message.includes("not inside a git work tree")) throw err;
+  throw new Error(`Path is not a git repository: ${expandedPath}`);
 }
 ```
 
-**Scope:** ~4 lines in one file.
+**Scope:** ~15 lines in one file.
+
+**Tests:** Add tests in `project-add.test.ts`:
+- Non-git directory → error with "not a git repository"
+- File path → error with "not a directory"
+- Valid git repo → succeeds
+- Git repo subdirectory → succeeds (rev-parse returns "true" for subdirs too)
 
 ---
 
-### A2: Auto-Detect Default Branch from Repo
+### A2: Auto-Detect Default Branch at Registration Time
 
 **Problem:** `config.ts:66` hardcodes `defaultBranch: z.string().default("main")`. Repos using `"master"` get the wrong default. Orchestrator creates worktrees on wrong branch.
 
-**Mechanism:** When loading project config, if `defaultBranch` is not explicitly set, detect it from the repo:
+**Mechanism:** Detect the default branch at **registration time** (`ao project add`), not at runtime. This keeps `defaultBranch` as a required `string` field in `ProjectConfig` (the Zod `.default("main")` stays as a parse-time fallback for legacy configs). The detection logic runs during `ao project add` and persists the result in the YAML.
 
-1. Run `git -C <projectPath> symbolic-ref refs/remotes/origin/HEAD` → parse branch name
+Detection cascade:
+1. `git -C <projectPath> symbolic-ref refs/remotes/origin/HEAD` → parse branch name (e.g. `refs/remotes/origin/main` → `main`)
 2. Fallback: `git -C <projectPath> rev-parse --abbrev-ref HEAD` → use current branch
-3. Final fallback: `"main"` (existing behavior)
+3. Final fallback: `"main"` (existing Zod default)
 
-**Where:** Two changes:
-- `packages/core/src/config.ts` — remove the `.default("main")` from the Zod schema, make it `z.string().optional()`
-- `packages/cli/src/commands/start.ts` or a new utility — detect branch at startup when `defaultBranch` is undefined, inject into resolved config
+**Legacy config handling:** For configs that predate this fix and lack an explicit `defaultBranch`, the Zod `.default("main")` applies at parse time. To detect this at startup and warn the user, use `loadConfigWithPath()` (`config.ts:387`) to get the config file path, then read the raw YAML and check whether `projects[projectName].defaultBranch` is present as a key before Zod normalization:
 
-**Scope:** ~15 lines of git detection logic + schema tweak.
+```typescript
+// In ao start, after loading config:
+import { readFileSync } from "node:fs";
+import YAML from "yaml";
+
+const { config, path: configPath } = loadConfigWithPath();
+const rawYaml = YAML.parse(readFileSync(configPath, "utf-8"));
+const rawProject = rawYaml?.projects?.[projectName];
+if (rawProject && !("defaultBranch" in rawProject)) {
+  console.warn(
+    `⚠ Project "${projectName}" has no explicit defaultBranch — defaulting to "main".\n` +
+    `  Run "ao project add" again or set defaultBranch in config to fix.`,
+  );
+}
+```
+
+This is a warning, not an error — it doesn't block startup, just alerts the user.
+
+**Where:**
+- New utility function `detectDefaultBranch(projectPath: string): Promise<string>` in `packages/cli/src/lib/git-utils.ts`
+- `packages/cli/src/commands/project-add.ts` — call `detectDefaultBranch()` during registration, write result to config. User's `--branch` flag takes precedence.
+- `packages/cli/src/commands/start.ts` — detect Zod-defaulted branch via raw YAML key check, emit warning
+- `packages/core/src/config.ts` — **no schema change**. `.default("main")` stays.
+
+**Scope:** ~25 lines of detection logic + ~10 lines for legacy warning.
+
+**Tests:** Add tests:
+- Register a repo using "master" without `--branch` → config has `defaultBranch: "master"`
+- Register with explicit `--branch develop` → config has `defaultBranch: "develop"`
+- `ao start` with Zod-defaulted defaultBranch → warning emitted
 
 ---
 
-### A3: Dashboard Port Collision Detection
+### A3+A4: Dashboard Port Collision + Process Cleanup via Run State
 
-**Problem:** Dashboard launches on `config.port ?? 3000` without checking availability (`start.ts:145`). If port is taken, Next.js fails silently — no dashboard, no error.
+**Problem (R3):** Dashboard launches on `config.port ?? 3000` without checking availability (`start.ts:145`). If port is taken, Next.js fails silently — no dashboard, no error.
 
-**Mechanism:** Before launching the dashboard, check if the port is available using the existing `isPortAvailable()` utility (`packages/cli/src/lib/web-dir.ts:23-34`). If taken:
+**Problem (R4):** `ao stop` kills the orchestrator session and dashboard process on the configured port. But terminal WebSocket servers on ports 14800/14801 are separate processes that survive. If A3 dynamically selects a port, `ao stop` won't know the actual port used.
 
-1. Try next N ports (3001, 3002, ...) up to a limit
-2. Use the first available port
-3. Print the actual port to stdout so Chip/user knows where the dashboard is
-4. If no port available in range, fail with clear error
+**Why coupled:** If the dashboard port can shift dynamically (A3), then `ao stop` (A4) can't rely on the static config port — it needs the actual resolved state. Both fixes share a run state persistence mechanism.
 
-**Where:** `packages/cli/src/commands/start.ts`, before `startDashboard()` call (~line 185). Use existing `isPortAvailable()`.
+**Mechanism:**
 
-**Scope:** ~15 lines in start.ts.
+1. **Run state file** — On `ao start`, after resolving the actual dashboard port and terminal ports, write a run state file. The filename is derived entirely from hashes to prevent path injection — project keys are unconstrained (`z.record()` in config schema), so raw names must never be used as path segments:
 
----
+```typescript
+// Filename: sha256(absoluteConfigPath + ":" + projectName), first 16 chars
+// Location: ~/.ao/run/<hash>.json
+// Example: ~/.ao/run/a1b2c3d4e5f6g7h8.json
+import { createHash } from "node:crypto";
+function runStateFilename(configPath: string, projectName: string): string {
+  const hash = createHash("sha256")
+    .update(`${configPath}:${projectName}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `${hash}.json`;
+}
 
-### A4: Clean Up Terminal WS Processes on `ao stop`
+// Contents:
+{
+  "configPath": "/abs/path/to/agent-orchestrator.yaml",
+  "projectName": "my-app",
+  "dashboardPid": 12345,
+  "dashboardPort": 3001,
+  "terminalPorts": [14800, 14801],
+  "startedAt": "2026-02-28T...",
+  "pgid": 12345     // process group ID for group kill
+}
+```
 
-**Problem:** `ao stop` kills the orchestrator session and dashboard process (`start.ts:299-337`). But terminal WebSocket servers spawned by the dashboard on ports 14800/14801 are separate processes that survive. Next `ao start` can't bind those ports.
+Write atomically (write to `.tmp`, rename) with mode `0o600`. The `configPath` and `projectName` fields inside the JSON are for human debugging only — the filename is the lookup key.
 
-**Mechanism:** In `stopDashboard()` (`web-dir.ts`), after killing the dashboard process, also find and kill processes on the terminal WS port range:
+2. **Port collision detection (R3)** — Before launching dashboard, check if configured port is available using existing `isPortAvailable()`. If taken, scan range (configured + 1 through configured + 10). Use first available. Print actual port. If no port available, fail with clear error.
 
-1. Track the terminal ports used (stored in dashboard env or session metadata)
-2. On stop: `lsof -ti :<port>` for each terminal port pair, kill those PIDs
-3. Alternative: kill the entire process group spawned by the dashboard
+3. **Dashboard spawn with process group** — Spawn dashboard with `detached: true` and `setsid`-equivalent behavior so the parent PID becomes the process group leader. Store PGID in run state.
 
-**Where:** `packages/cli/src/lib/web-dir.ts` — extend `stopDashboard()` to accept terminal port range and clean those up too. Update `start.ts` stop handler to pass the ports.
+4. **Process cleanup (R4)** — On `ao stop`, read the run state file. Before killing:
+   - **Verify PID liveness**: check if PID exists (`kill(pid, 0)`)
+   - **Verify PID identity**: compare process command/cwd against expected dashboard process (prevents stale-PID-reuse kills)
+   - Kill process group via `process.kill(-pgid, 'SIGTERM')` — cleans up dashboard + all terminal WS children
+   - Delete run state file after cleanup
+   - If run state file is missing (legacy), fall back to current `lsof` behavior on configured port only, with a warning
 
-**Scope:** ~20 lines across two files.
+**Where:**
+- `packages/cli/src/lib/web-dir.ts` — port scanning, run state I/O, process group spawn, verified cleanup
+- `packages/cli/src/commands/start.ts` — pass resolved port, log actual port
+
+**Scope:** ~45 lines across 2 files.
+
+**Tests:**
+- Port 3000 occupied → dashboard starts on 3001, run state records 3001
+- `ao stop` with valid run state → kills process group, cleans up run state file
+- `ao stop` with stale PID in run state → skips kill, warns, cleans up file
+- `ao stop` with missing run state → falls back to lsof with warning
 
 ---
 
@@ -142,7 +256,7 @@ if (!existsSync(gitDir)) {
 
 **Mechanism:** Early in `ao start`, after resolving the project config, check that `project.path` exists and is a directory. Fail immediately with: `"Project path does not exist: /path/to/app — was it moved or deleted?"`.
 
-**Where:** `packages/cli/src/commands/start.ts`, after project resolution (~line 143). Add:
+**Where:** `packages/cli/src/commands/start.ts`, after project resolution (~line 143):
 
 ```typescript
 if (!existsSync(project.path)) {
@@ -152,47 +266,96 @@ if (!existsSync(project.path)) {
 
 **Scope:** ~4 lines in one file.
 
+**Tests:** Add test: config with nonexistent path → `ao start` fails with clear error message before any spawn attempt.
+
 ---
 
-### A6: Expand `~` in `AO_CONFIG_PATH`
+### A6: Expand `~` in `AO_CONFIG_PATH` and Fail Loudly
 
-**Problem:** `config.ts:297-302` reads `AO_CONFIG_PATH` and calls `resolve()` on it. But `resolve("~/foo")` doesn't expand `~` — it joins with CWD, producing `$CWD/~/foo`. The config load silently fails and falls back to default search.
+**Problem:** `config.ts` in `findConfigFile()` (line 295-302) reads `AO_CONFIG_PATH` and calls `resolve()` on it. But `resolve("~/foo")` doesn't expand `~` — it joins with CWD, producing `$CWD/~/foo`. The config load silently fails and falls back to default search. Additionally, if the user explicitly sets `AO_CONFIG_PATH` to a nonexistent file (even after tilde expansion), the silent fallback to default config search is confusing — the user expects their specified path to be used.
 
-**Mechanism:** Apply the existing `expandHome()` utility (`packages/core/src/paths.ts:162-167`) to the `AO_CONFIG_PATH` value before calling `resolve()`.
+**Mechanism:** Two fixes inside `findConfigFile()`:
 
-**Where:** `packages/core/src/config.ts`, line ~298:
+1. **Tilde expansion** — Apply the existing `expandHome()` utility (`packages/core/src/paths.ts:162-167`) to the `AO_CONFIG_PATH` value before calling `resolve()`.
+
+2. **Fail loudly on invalid path** — If `AO_CONFIG_PATH` is set but the expanded path doesn't exist, throw an error instead of silently falling back. The user explicitly told us where the config is; if it's not there, that's an error.
+
+**Where:** `packages/core/src/config.ts`, inside `findConfigFile()` (~line 295-302):
 
 ```typescript
-const envPath = process.env["AO_CONFIG_PATH"];
-const configPath = envPath ? resolve(expandHome(envPath)) : findConfigPath();
+export function findConfigFile(startDir?: string): string | null {
+  // 1. Check environment variable override
+  if (process.env["AO_CONFIG_PATH"]) {
+    const expanded = resolve(expandHome(process.env["AO_CONFIG_PATH"]));
+    if (!existsSync(expanded)) {
+      throw new Error(
+        `AO_CONFIG_PATH points to nonexistent file: ${expanded}` +
+        (expanded !== process.env["AO_CONFIG_PATH"] ? ` (expanded from: ${process.env["AO_CONFIG_PATH"]})` : ""),
+      );
+    }
+    return expanded;
+  }
+  // 2-4. Continue with existing search cascade...
 ```
 
-**Scope:** 1 line change (wrap with `expandHome()`).
+**Scope:** ~8 lines in `findConfigFile()`.
+
+**Tests:** Add tests in `config.test.ts`:
+- `AO_CONFIG_PATH=~/foo.yaml` with `~/foo.yaml` existing → found and returned
+- `AO_CONFIG_PATH=~/nonexistent.yaml` → throws error mentioning the expanded path
+- `AO_CONFIG_PATH=/absolute/path.yaml` existing → works as before
+- `AO_CONFIG_PATH` not set → falls through to normal search cascade (no change)
 
 ---
 
 ### A7: Clear Session Status When Agent Exits Cleanly
 
-**Problem:** When a Claude Code agent process exits (finishes its work), the tmux session stays alive (tmux doesn't auto-close). `session-manager.ts:551-570` detects `activity = "exited"` because the process isn't running, but the tmux session still exists. Status page shows the session as alive but with "exited" activity — ambiguous. Lifecycle manager keeps polling a dead session.
+**Problem:** When a Claude Code agent process exits (finishes its work), the tmux session stays alive (tmux doesn't auto-close). `session-manager.ts:551-570` detects `activity = "exited"` because the process isn't running, but the tmux session still exists. Status page shows the session with "exited" activity but a non-terminal status — ambiguous. Lifecycle manager keeps polling it because `lifecycle-manager.ts:536` and `:560` only skip sessions with `status === "merged" || status === "killed"`, not `"done"`.
 
-**Mechanism:** When activity detection reports "exited" for an agent process:
+**Session status enum reference** (`types.ts:26-42`): statuses include `"spawning"`, `"working"`, `"pr_open"`, `"ci_failed"`, `"review_pending"`, `"changes_requested"`, `"approved"`, `"mergeable"`, `"merged"`, `"cleanup"`, `"needs_input"`, `"stuck"`, `"errored"`, `"killed"`, `"done"`, `"terminated"`. There is no `"running"` status.
 
-1. Mark the session status as `"done"` (not just activity as "exited")
-2. Optionally kill the orphaned tmux session (it served its purpose)
-3. Stop polling the session — it's terminal
+**Mechanism:**
 
-The key change is in `session-manager.ts` status refresh logic: when `activity === "exited"` AND the session was previously `"running"`, transition to `status: "done"` instead of leaving it in a limbo state.
-
-**Where:** `packages/core/src/session-manager.ts`, in the status refresh method (~line 551-570). Add state transition logic:
+1. **Transition to `"done"` status** — In `session-manager.ts` status refresh logic: when `activity === "exited"` AND the session status is NOT already terminal, transition to `status: "done"`. Use the shared predicate:
 
 ```typescript
-if (activity === "exited" && session.status === "running") {
+// In ensureHandleAndEnrich() or equivalent status refresh:
+if (activity === "exited" && !TERMINAL_STATUSES.has(session.status)) {
   session.status = "done";
-  // Optionally: await plugins.runtime.destroy(session.runtimeHandle);
 }
 ```
 
-**Scope:** ~5 lines in session-manager.ts + optional tmux cleanup.
+2. **Update lifecycle-manager.ts to use TERMINAL_STATUSES** — Replace hardcoded `"merged"/"killed"` checks with the shared `TERMINAL_STATUSES` set at both sites:
+
+```typescript
+// lifecycle-manager.ts:536 — session filtering
+const sessionsToCheck = sessions.filter((s) => {
+  if (!TERMINAL_STATUSES.has(s.status)) return true;
+  const tracked = states.get(s.id);
+  return tracked !== undefined && tracked !== s.status;
+});
+
+// lifecycle-manager.ts:560 — all-complete check
+const activeSessions = sessions.filter((s) => !TERMINAL_STATUSES.has(s.status));
+```
+
+3. **Update `start.ts:203` terminal check** — Change from `existing.status !== "killed"` to `!isTerminalSession(existing)` (or `!TERMINAL_STATUSES.has(existing.status)`). This ensures `"done"`, `"errored"`, `"terminated"`, etc. all correctly allow restart instead of blocking it.
+
+4. **Clean up orphaned tmux session** — After transitioning to `"done"`, destroy the tmux session via `plugins.runtime.destroy(session.runtimeHandle)` since it no longer serves a purpose.
+
+**Where:**
+- `packages/core/src/session-manager.ts:551-570` — add state transition using `TERMINAL_STATUSES`
+- `packages/core/src/lifecycle-manager.ts:536,560` — replace hardcoded status checks with `TERMINAL_STATUSES`
+- `packages/cli/src/commands/start.ts:203` — replace `!== "killed"` with `!TERMINAL_STATUSES.has()`
+
+**Scope:** ~12 lines across 3 files.
+
+**Tests:**
+- `session-manager.test.ts`: activity "exited" + status "working" → transitions to "done"
+- `session-manager.test.ts`: activity "exited" + status "done" (already terminal) → no change
+- `session-manager.test.ts`: `isTerminalSession()` returns true for "done" (already covered by existing tests, verify)
+- `lifecycle-manager.test.ts` or integration: "done" sessions excluded from polling
+- `start.ts` test: session with status "done" → allows restart (doesn't block)
 
 ---
 
@@ -200,16 +363,16 @@ if (activity === "exited" && session.status === "running") {
 
 | Req | Requirement | Part | Covered? |
 |-----|-------------|------|----------|
-| R0 | Agent sessions start unattended — no permission prompts | A0 | ✅ Default `permissions: skip` in Zod schema |
-| R1 | `ao project add` rejects non-git directories | A1 | ✅ Check `.git` at path, fail early |
-| R2 | Default branch auto-detected from repo | A2 | ✅ `git symbolic-ref` → `git rev-parse` → `"main"` fallback |
-| R3 | Dashboard port collision → find available port or fail clearly | A3 | ✅ Use existing `isPortAvailable()`, scan range |
-| R4 | `ao stop` cleans up ALL processes including terminal WS | A4 | ✅ Extend `stopDashboard()` to kill terminal ports |
+| R0 | Agent sessions start unattended — no permission prompts | A0 | ✅ Zod default + `getAgentConfig()` runtime fallback in both worker/orchestrator paths |
+| R1 | `ao project add` rejects non-git directories | A1 | ✅ `git rev-parse --is-inside-work-tree`, assert stdout `"true"`, directory check |
+| R2 | Default branch auto-detected from repo | A2 | ✅ Detect at registration, persist in config, warn on legacy Zod-defaulted configs |
+| R3 | Dashboard port collision → find available port or fail clearly | A3+A4 | ✅ Port scan + run state persistence with actual resolved port |
+| R4 | `ao stop` cleans up ALL processes including terminal WS | A3+A4 | ✅ Track PGID in run state, verified process-group kill, lsof fallback for legacy |
 | R5 | `ao start` validates project path exists before spawning | A5 | ✅ `existsSync` check after project resolution |
-| R6 | `AO_CONFIG_PATH` expands `~` to home directory | A6 | ✅ Apply `expandHome()` before `resolve()` |
-| R7 | Agent exit → session marked "done", not ambiguous | A7 | ✅ State transition in session-manager status refresh |
+| R6 | `AO_CONFIG_PATH` expands `~` and fails loudly if invalid | A6 | ✅ `expandHome()` in `findConfigFile()` + throw on nonexistent path |
+| R7 | Agent exit → session marked "done", not ambiguous | A7 | ✅ Non-terminal→"done" transition + `TERMINAL_STATUSES` in lifecycle-manager + start.ts |
 
-All 8 requirements covered. All mechanisms use existing utilities where possible. No new abstractions needed.
+All 8 requirements covered. All mechanisms verified against actual codebase types, function names, and status enums.
 
 ---
 
@@ -217,20 +380,20 @@ All 8 requirements covered. All mechanisms use existing utilities where possible
 
 | Part | Files Touched | Lines Changed | Complexity |
 |------|--------------|---------------|------------|
-| A0 | 1 (config.ts) | ~1 | Trivial |
-| A1 | 1 (project-add.ts) | ~4 | Trivial |
-| A2 | 2 (config.ts, start.ts or utility) | ~15 | Small |
-| A3 | 1 (start.ts) | ~15 | Small |
-| A4 | 2 (web-dir.ts, start.ts) | ~20 | Small |
+| A0 | 2 (config.ts, session-manager.ts) | ~5 | Trivial |
+| A1 | 1 (project-add.ts) | ~15 | Small |
+| A2 | 2-3 (project-add.ts, git-utils.ts, start.ts) | ~35 | Small |
+| A3+A4 | 2 (web-dir.ts, start.ts) | ~45 | Medium |
 | A5 | 1 (start.ts) | ~4 | Trivial |
-| A6 | 1 (config.ts) | ~1 | Trivial |
-| A7 | 1 (session-manager.ts) | ~5 | Small |
-| **Total** | **~6 unique files** | **~65 lines** | **Small** |
+| A6 | 1 (config.ts) | ~8 | Trivial |
+| A7 | 3 (session-manager.ts, lifecycle-manager.ts, start.ts) | ~12 | Small |
+| **Tests** | ~5 test files | ~60 | Small |
+| **Total** | **~10 unique files** | **~185 lines** | **Small-Medium** |
 
-All fixes are independent. Can be done in a single slice. No spikes needed — all mechanisms are known and verified against the current codebase.
+A3+A4 is the only medium-complexity piece (run state file I/O + process group management). All other fixes are trivial or small. Can be done in a single slice. No spikes needed.
 
 ---
 
 ## Open Questions
 
-None. All 8 gaps are concrete, all mechanisms verified against source code. Ready to slice.
+None. All 8 gaps are concrete, all mechanisms verified against source code types and function names, all review feedback incorporated. Ready to slice.
