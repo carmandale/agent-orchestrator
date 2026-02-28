@@ -184,6 +184,8 @@ export interface SessionSpawnConfig {
 export interface OrchestratorSpawnConfig {
   projectId: string;
   systemPrompt?: string;
+  /** Initial user message to send to the agent (e.g. "Start building.") */
+  initialPrompt?: string;
 }
 
 // =============================================================================

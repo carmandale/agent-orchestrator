@@ -230,7 +230,13 @@ export function registerStart(program: Command): void {
                   prompt: opts?.prompt,
                 });
 
-                const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
+                const session = await sm.spawnOrchestrator({
+                  projectId,
+                  systemPrompt,
+                  initialPrompt: opts?.prompt
+                    ? "Start building. Follow your system prompt."
+                    : undefined,
+                });
                 if (session.runtimeHandle?.id) {
                   tmuxTarget = session.runtimeHandle.id;
                 }

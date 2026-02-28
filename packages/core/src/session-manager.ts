@@ -683,6 +683,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       projectConfig: project,
       ...orchestratorAgentConfig,
       systemPromptFile,
+      prompt: orchestratorConfig.initialPrompt,
     };
 
     const launchCommand = plugins.agent.getLaunchCommand(agentLaunchConfig);
