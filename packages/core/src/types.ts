@@ -383,8 +383,14 @@ export interface Workspace {
   /** Create an isolated workspace for a session */
   create(config: WorkspaceCreateConfig): Promise<WorkspaceInfo>;
 
-  /** Destroy a workspace */
-  destroy(workspacePath: string): Promise<void>;
+  /**
+   * Resolve the managed workspace path for a session identity.
+   * Plugins must derive this from trusted config + identity (not metadata paths).
+   */
+  resolvePath(ref: WorkspaceSessionRef): string;
+
+  /** Destroy a workspace by trusted session identity */
+  destroy(ref: WorkspaceSessionRef): Promise<void>;
 
   /** List existing workspaces for a project */
   list(projectId: string): Promise<WorkspaceInfo[]>;
@@ -396,7 +402,7 @@ export interface Workspace {
   exists?(workspacePath: string): Promise<boolean>;
 
   /** Optional: restore a workspace (e.g. recreate a worktree for an existing branch) */
-  restore?(config: WorkspaceCreateConfig, workspacePath: string): Promise<WorkspaceInfo>;
+  restore?(config: WorkspaceCreateConfig): Promise<WorkspaceInfo>;
 }
 
 export interface WorkspaceCreateConfig {
@@ -411,6 +417,12 @@ export interface WorkspaceInfo {
   branch: string;
   sessionId: SessionId;
   projectId: string;
+}
+
+export interface WorkspaceSessionRef {
+  projectId: string;
+  project: ProjectConfig;
+  sessionId: SessionId;
 }
 
 // =============================================================================

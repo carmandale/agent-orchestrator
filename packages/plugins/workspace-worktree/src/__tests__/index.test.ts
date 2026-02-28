@@ -81,6 +81,14 @@ function makeCreateConfig(overrides?: Partial<WorkspaceCreateConfig>): Workspace
   };
 }
 
+function makeSessionRef(projectId = "myproject", sessionId = "session-1") {
+  return {
+    projectId,
+    project: makeProject(),
+    sessionId,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Reset mocks before each test
 // ---------------------------------------------------------------------------
@@ -135,6 +143,11 @@ describe("create() factory", () => {
     const info = await ws.create(makeCreateConfig());
 
     expect(info.path).toBe("/mock-home/custom-path/myproject/session-1");
+  });
+
+  it("resolves managed path from session identity", () => {
+    const ws = create();
+    expect(ws.resolvePath(makeSessionRef("proj", "sess"))).toBe("/mock-home/.worktrees/proj/sess");
   });
 });
 
@@ -339,7 +352,7 @@ describe("workspace.destroy()", () => {
     // worktree remove succeeds
     mockGitSuccess("");
 
-    await ws.destroy("/mock-home/.worktrees/myproject/session-1");
+    await ws.destroy(makeSessionRef("myproject", "session-1"));
 
     // First call: rev-parse
     expect(mockExecFileAsync).toHaveBeenCalledWith(
@@ -362,7 +375,7 @@ describe("workspace.destroy()", () => {
 
     mockGitError("not a git repository"); // rev-parse fails
 
-    await expect(ws.destroy("/mock-home/.worktrees/myproject/session-1")).rejects.toThrow(
+    await expect(ws.destroy(makeSessionRef("myproject", "session-1"))).rejects.toThrow(
       'Failed to destroy worktree "/mock-home/.worktrees/myproject/session-1": not a git repository',
     );
     expect(mockRmSync).not.toHaveBeenCalled();
@@ -373,27 +386,27 @@ describe("workspace.destroy()", () => {
 
     mockExistsSync.mockReturnValueOnce(false);
 
-    await ws.destroy("/mock-home/.worktrees/myproject/missing");
+    await ws.destroy(makeSessionRef("myproject", "missing"));
 
     expect(mockExecFileAsync).not.toHaveBeenCalled();
     expect(mockRmSync).not.toHaveBeenCalled();
   });
 
-  it("rejects destruction outside managed worktreeDir", async () => {
+  it("rejects invalid projectId for destruction", async () => {
     const ws = create();
 
-    await expect(ws.destroy("/repo/path")).rejects.toThrow(
-      "Refusing to destroy workspace outside managed worktreeDir: /repo/path",
+    await expect(ws.destroy(makeSessionRef("../repo", "session-1"))).rejects.toThrow(
+      'Invalid projectId "../repo"',
     );
     expect(mockExecFileAsync).not.toHaveBeenCalled();
     expect(mockRmSync).not.toHaveBeenCalled();
   });
 
-  it("rejects destruction of worktree base dir itself", async () => {
+  it("rejects invalid sessionId for destruction", async () => {
     const ws = create();
 
-    await expect(ws.destroy("/mock-home/.worktrees")).rejects.toThrow(
-      "Refusing to destroy workspace outside managed worktreeDir: /mock-home/.worktrees",
+    await expect(ws.destroy(makeSessionRef("myproject", "../bad"))).rejects.toThrow(
+      'Invalid sessionId "../bad"',
     );
     expect(mockExecFileAsync).not.toHaveBeenCalled();
     expect(mockRmSync).not.toHaveBeenCalled();

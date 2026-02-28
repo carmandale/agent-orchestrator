@@ -154,6 +154,7 @@ beforeEach(() => {
       sessionId: "app-1",
       projectId: "my-app",
     }),
+    resolvePath: vi.fn().mockImplementation((ref) => `/tmp/mock-ws/${ref.projectId}/${ref.sessionId}`),
     destroy: vi.fn().mockResolvedValue(undefined),
     list: vi.fn().mockResolvedValue([]),
   };

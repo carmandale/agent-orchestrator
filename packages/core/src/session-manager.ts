@@ -11,8 +11,8 @@
  * Reference: scripts/claude-ao-session, scripts/send-to-session
  */
 
-import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
-import { join, resolve, relative, isAbsolute } from "node:path";
+import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import {
   isIssueNotFoundError,
   isRestorable,
@@ -32,6 +32,7 @@ import {
   type Agent,
   type AgentSpecificConfig,
   type Workspace,
+  type WorkspaceSessionRef,
   type Tracker,
   type SCM,
   type PluginRegistry,
@@ -85,29 +86,6 @@ function safeJsonParse<T>(str: string): T | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Normalize a filesystem path to a stable canonical form for safety checks.
- * Falls back to absolute resolve when realpath is unavailable (e.g. path missing).
- */
-function toCanonicalPath(path: string): string {
-  try {
-    // Node 18+ supports realpathSync.native; fallback for compatibility.
-    return (realpathSync as typeof realpathSync & { native?: (p: string) => string }).native?.(path)
-      ?? realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
-}
-
-/** True when candidate is the same path as, or a descendant of, ancestor. */
-function isSameOrDescendantPath(candidate: string, ancestor: string): boolean {
-  const normCandidate = toCanonicalPath(candidate);
-  const normAncestor = toCanonicalPath(ancestor);
-  if (normCandidate === normAncestor) return true;
-  const rel = relative(normAncestor, normCandidate);
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 /** Valid session statuses for validation. */
@@ -196,6 +174,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
    */
   function getProjectSessionsDir(project: ProjectConfig): string {
     return getSessionsDir(config.configPath, project.path);
+  }
+
+  function toWorkspaceRef(
+    projectId: string,
+    project: ProjectConfig,
+    sessionId: SessionId,
+  ): WorkspaceSessionRef {
+    return { projectId, project, sessionId };
   }
 
   /**
@@ -468,6 +454,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     if (config.configPath) {
       tmuxName = generateTmuxName(config.configPath, project.sessionPrefix, num);
     }
+    const workspaceRef = toWorkspaceRef(spawnConfig.projectId, project, sessionId);
 
     // Determine branch name — explicit branch always takes priority
     let branch: string;
@@ -498,12 +485,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           try {
             await plugins.workspace.postCreate(wsInfo, project);
           } catch (err) {
-            if (workspacePath !== project.path) {
-              try {
-                await plugins.workspace.destroy(workspacePath);
-              } catch {
-                /* best effort */
-              }
+            try {
+              await plugins.workspace.destroy(workspaceRef);
+            } catch {
+              /* best effort */
             }
             throw err;
           }
@@ -566,9 +551,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       });
     } catch (err) {
       // Clean up workspace and reserved ID if agent config or runtime creation failed
-      if (plugins.workspace && workspacePath !== project.path) {
+      if (plugins.workspace) {
         try {
-          await plugins.workspace.destroy(workspacePath);
+          await plugins.workspace.destroy(workspaceRef);
         } catch {
           /* best effort */
         }
@@ -621,9 +606,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       } catch {
         /* best effort */
       }
-      if (plugins.workspace && workspacePath !== project.path) {
+      if (plugins.workspace) {
         try {
-          await plugins.workspace.destroy(workspacePath);
+          await plugins.workspace.destroy(workspaceRef);
         } catch {
           /* best effort */
         }
@@ -839,19 +824,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     let raw: Record<string, string> | null = null;
     let sessionsDir: string | null = null;
     let project: ProjectConfig | undefined;
+    let projectId: string | undefined;
 
-    for (const proj of Object.values(config.projects)) {
+    for (const [key, proj] of Object.entries(config.projects)) {
       const dir = getProjectSessionsDir(proj);
       const metadata = readMetadataRaw(dir, sessionId);
       if (metadata) {
         raw = metadata;
         sessionsDir = dir;
         project = proj;
+        projectId = key;
         break;
       }
     }
 
-    if (!raw || !sessionsDir) {
+    if (!raw || !sessionsDir || !project || !projectId) {
       throw new Error(`Session ${sessionId} not found`);
     }
 
@@ -874,19 +861,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       }
     }
 
-    // Destroy workspace for isolated sessions only.
-    // Safety: never destroy when workspace resolves to the project path or an ancestor of it.
-    const worktree = raw["worktree"];
-    const isUnsafeWorkspacePath = project && worktree
-      ? isSameOrDescendantPath(project.path, worktree)
-      : false;
-    if (worktree && !isUnsafeWorkspacePath) {
-      const workspacePlugin = project
-        ? resolvePlugins(project).workspace
-        : registry.get<Workspace>("workspace", config.defaults.workspace);
+    // Destroy workspace by trusted identity for worker sessions only.
+    if (!sessionId.endsWith("-orchestrator")) {
+      const workspacePlugin = resolvePlugins(project).workspace;
       if (workspacePlugin) {
         try {
-          await workspacePlugin.destroy(worktree);
+          await workspacePlugin.destroy(toWorkspaceRef(projectId, project, sessionId));
         } catch {
           // Workspace might already be gone
         }
@@ -1093,8 +1073,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       throw new Error(`Agent plugin '${fallbackAgent}' not found`);
     }
 
-    // 5. Check workspace
-    const workspacePath = raw["worktree"] || project.path;
+    // 5. Check workspace using trusted identity-derived path for worker sessions.
+    const isOrchestrator = sessionId.endsWith("-orchestrator");
+    const workspaceRef = toWorkspaceRef(projectId, project, sessionId);
+    let workspacePath = isOrchestrator || !plugins.workspace
+      ? project.path
+      : plugins.workspace.resolvePath(workspaceRef);
     const workspaceExists = plugins.workspace?.exists
       ? await plugins.workspace.exists(workspacePath)
       : existsSync(workspacePath);
@@ -1108,15 +1092,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         throw new WorkspaceMissingError(workspacePath, "branch metadata is missing");
       }
       try {
-        const wsInfo = await plugins.workspace.restore(
-          {
-            projectId,
-            project,
-            sessionId,
-            branch: session.branch,
-          },
-          workspacePath,
-        );
+        const wsInfo = await plugins.workspace.restore({
+          projectId,
+          project,
+          sessionId,
+          branch: session.branch,
+        });
+        workspacePath = wsInfo.path;
 
         // Run post-create hooks on restored workspace
         if (plugins.workspace.postCreate) {
@@ -1141,7 +1123,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     // 7. Get launch command — try restore command first, fall back to fresh launch
     let launchCommand: string;
-    const isOrchestrator = sessionId.endsWith("-orchestrator");
     const agentConfigForSession = getAgentConfig(project, isOrchestrator ? "orchestrator" : "worker");
     const agentLaunchConfig = {
       sessionId,

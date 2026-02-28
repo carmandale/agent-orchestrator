@@ -8,6 +8,7 @@ import type {
   Workspace,
   WorkspaceCreateConfig,
   WorkspaceInfo,
+  WorkspaceSessionRef,
   ProjectConfig,
 } from "@composio/ao-core";
 
@@ -49,6 +50,10 @@ export function create(config?: Record<string, unknown>): Workspace {
     : join(homedir(), ".ao-clones");
   const resolvedCloneBaseDir = resolve(cloneBaseDir);
 
+  function managedPathForSession(ref: WorkspaceSessionRef): string {
+    return join(cloneBaseDir, ref.projectId, ref.sessionId);
+  }
+
   function isManagedClonePath(workspacePath: string): boolean {
     const resolvedWorkspacePath = resolve(workspacePath);
     const rel = relative(resolvedCloneBaseDir, resolvedWorkspacePath);
@@ -59,13 +64,19 @@ export function create(config?: Record<string, unknown>): Workspace {
   return {
     name: "clone",
 
+    resolvePath(ref: WorkspaceSessionRef): string {
+      assertSafePathSegment(ref.projectId, "projectId");
+      assertSafePathSegment(ref.sessionId, "sessionId");
+      return managedPathForSession(ref);
+    },
+
     async create(cfg: WorkspaceCreateConfig): Promise<WorkspaceInfo> {
       assertSafePathSegment(cfg.projectId, "projectId");
       assertSafePathSegment(cfg.sessionId, "sessionId");
 
       const repoPath = expandPath(cfg.project.path);
       const projectCloneDir = join(cloneBaseDir, cfg.projectId);
-      const clonePath = join(projectCloneDir, cfg.sessionId);
+      const clonePath = managedPathForSession(cfg);
 
       mkdirSync(projectCloneDir, { recursive: true });
 
@@ -133,7 +144,11 @@ export function create(config?: Record<string, unknown>): Workspace {
       };
     },
 
-    async destroy(workspacePath: string): Promise<void> {
+    async destroy(ref: WorkspaceSessionRef): Promise<void> {
+      assertSafePathSegment(ref.projectId, "projectId");
+      assertSafePathSegment(ref.sessionId, "sessionId");
+      const workspacePath = managedPathForSession(ref);
+
       if (!isManagedClonePath(workspacePath)) {
         throw new Error(`Refusing to destroy workspace outside managed cloneDir: ${workspacePath}`);
       }
@@ -191,8 +206,11 @@ export function create(config?: Record<string, unknown>): Workspace {
       }
     },
 
-    async restore(cfg: WorkspaceCreateConfig, workspacePath: string): Promise<WorkspaceInfo> {
+    async restore(cfg: WorkspaceCreateConfig): Promise<WorkspaceInfo> {
+      assertSafePathSegment(cfg.projectId, "projectId");
+      assertSafePathSegment(cfg.sessionId, "sessionId");
       const repoPath = expandPath(cfg.project.path);
+      const workspacePath = managedPathForSession(cfg);
 
       // Get remote URL
       let remoteUrl: string;

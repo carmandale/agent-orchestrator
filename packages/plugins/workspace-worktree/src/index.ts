@@ -8,6 +8,7 @@ import type {
   Workspace,
   WorkspaceCreateConfig,
   WorkspaceInfo,
+  WorkspaceSessionRef,
   ProjectConfig,
 } from "@composio/ao-core";
 
@@ -52,6 +53,10 @@ export function create(config?: Record<string, unknown>): Workspace {
     : join(homedir(), ".worktrees");
   const resolvedWorktreeBaseDir = resolve(worktreeBaseDir);
 
+  function managedPathForSession(ref: WorkspaceSessionRef): string {
+    return join(worktreeBaseDir, ref.projectId, ref.sessionId);
+  }
+
   function isManagedWorkspacePath(workspacePath: string): boolean {
     const resolvedWorkspacePath = resolve(workspacePath);
     const rel = relative(resolvedWorktreeBaseDir, resolvedWorkspacePath);
@@ -62,13 +67,19 @@ export function create(config?: Record<string, unknown>): Workspace {
   return {
     name: "worktree",
 
+    resolvePath(ref: WorkspaceSessionRef): string {
+      assertSafePathSegment(ref.projectId, "projectId");
+      assertSafePathSegment(ref.sessionId, "sessionId");
+      return managedPathForSession(ref);
+    },
+
     async create(cfg: WorkspaceCreateConfig): Promise<WorkspaceInfo> {
       assertSafePathSegment(cfg.projectId, "projectId");
       assertSafePathSegment(cfg.sessionId, "sessionId");
 
       const repoPath = expandPath(cfg.project.path);
       const projectWorktreeDir = join(worktreeBaseDir, cfg.projectId);
-      const worktreePath = join(projectWorktreeDir, cfg.sessionId);
+      const worktreePath = managedPathForSession(cfg);
 
       mkdirSync(projectWorktreeDir, { recursive: true });
 
@@ -119,7 +130,11 @@ export function create(config?: Record<string, unknown>): Workspace {
       };
     },
 
-    async destroy(workspacePath: string): Promise<void> {
+    async destroy(ref: WorkspaceSessionRef): Promise<void> {
+      assertSafePathSegment(ref.projectId, "projectId");
+      assertSafePathSegment(ref.sessionId, "sessionId");
+      const workspacePath = managedPathForSession(ref);
+
       if (!isManagedWorkspacePath(workspacePath)) {
         throw new Error(
           `Refusing to destroy workspace outside managed worktreeDir: ${workspacePath}`,
@@ -223,8 +238,11 @@ export function create(config?: Record<string, unknown>): Workspace {
       }
     },
 
-    async restore(cfg: WorkspaceCreateConfig, workspacePath: string): Promise<WorkspaceInfo> {
+    async restore(cfg: WorkspaceCreateConfig): Promise<WorkspaceInfo> {
+      assertSafePathSegment(cfg.projectId, "projectId");
+      assertSafePathSegment(cfg.sessionId, "sessionId");
       const repoPath = expandPath(cfg.project.path);
+      const workspacePath = managedPathForSession(cfg);
 
       // Prune stale worktree entries
       try {

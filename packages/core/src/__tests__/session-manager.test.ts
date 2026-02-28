@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -68,8 +68,10 @@ beforeEach(() => {
       sessionId: "app-1",
       projectId: "my-app",
     }),
+    resolvePath: vi.fn().mockImplementation((ref) => join(tmpDir, `ws-${ref.sessionId}`)),
     destroy: vi.fn().mockResolvedValue(undefined),
     list: vi.fn().mockResolvedValue([]),
+    exists: vi.fn().mockResolvedValue(true),
   };
 
   mockRegistry = {
@@ -752,7 +754,11 @@ describe("kill", () => {
     await sm.kill("app-1");
 
     expect(mockRuntime.destroy).toHaveBeenCalledWith(makeHandle("rt-1"));
-    expect(mockWorkspace.destroy).toHaveBeenCalledWith("/tmp/ws");
+    expect(mockWorkspace.destroy).toHaveBeenCalledWith({
+      projectId: "my-app",
+      project: config.projects["my-app"],
+      sessionId: "app-1",
+    });
     expect(readMetadata(sessionsDir, "app-1")).toBeNull(); // archived + deleted
   });
 
@@ -788,14 +794,9 @@ describe("kill", () => {
     await expect(sm.kill("app-1")).resolves.toBeUndefined();
   });
 
-  it("does not destroy workspace when worktree resolves to project path via symlink", async () => {
-    const projectPath = config.projects["my-app"].path;
-    mkdirSync(projectPath, { recursive: true });
-    const aliasPath = join(tmpDir, "my-app-alias");
-    symlinkSync(projectPath, aliasPath);
-
+  it("ignores metadata worktree path and destroys by identity", async () => {
     writeMetadata(sessionsDir, "app-1", {
-      worktree: aliasPath,
+      worktree: "/repo/path/that-should-never-be-used",
       branch: "main",
       status: "working",
       project: "my-app",
@@ -806,26 +807,11 @@ describe("kill", () => {
     await sm.kill("app-1");
 
     expect(mockRuntime.destroy).toHaveBeenCalledWith(makeHandle("rt-1"));
-    expect(mockWorkspace.destroy).not.toHaveBeenCalled();
-  });
-
-  it("does not destroy workspace when worktree path is an ancestor of project path", async () => {
-    const projectPath = config.projects["my-app"].path;
-    mkdirSync(projectPath, { recursive: true });
-
-    writeMetadata(sessionsDir, "app-1", {
-      worktree: tmpDir,
-      branch: "main",
-      status: "working",
-      project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    expect(mockWorkspace.destroy).toHaveBeenCalledWith({
+      projectId: "my-app",
+      project: config.projects["my-app"],
+      sessionId: "app-1",
     });
-
-    const sm = createSessionManager({ config, registry: mockRegistry });
-    await sm.kill("app-1");
-
-    expect(mockRuntime.destroy).toHaveBeenCalledWith(makeHandle("rt-1"));
-    expect(mockWorkspace.destroy).not.toHaveBeenCalled();
   });
 });
 
@@ -1246,6 +1232,55 @@ describe("restore", () => {
     expect(restored.id).toBe("app-1");
     expect(mockWorkspaceWithRestore.restore).toHaveBeenCalled();
     expect(mockRuntime.create).toHaveBeenCalled();
+  });
+
+  it("ignores metadata worktree path during restore and uses identity-derived workspace", async () => {
+    const safeWorkspacePath = join(tmpDir, "ws-app-1");
+
+    const mockWorkspaceWithRestore: Workspace = {
+      ...mockWorkspace,
+      exists: vi.fn().mockResolvedValue(false),
+      restore: vi.fn().mockResolvedValue({
+        path: safeWorkspacePath,
+        branch: "feat/TEST-1",
+        sessionId: "app-1",
+        projectId: "my-app",
+      }),
+    };
+
+    const registryWithRestore: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspaceWithRestore;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/repo/path/that-should-not-be-trusted",
+      branch: "feat/TEST-1",
+      status: "terminated",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithRestore });
+    const restored = await sm.restore("app-1");
+
+    expect(mockWorkspaceWithRestore.resolvePath).toHaveBeenCalledWith({
+      projectId: "my-app",
+      project: config.projects["my-app"],
+      sessionId: "app-1",
+    });
+    expect(mockWorkspaceWithRestore.restore).toHaveBeenCalledWith({
+      projectId: "my-app",
+      project: config.projects["my-app"],
+      sessionId: "app-1",
+      branch: "feat/TEST-1",
+    });
+    expect(restored.workspacePath).toBe(safeWorkspacePath);
   });
 
   it("throws SessionNotRestorableError for merged sessions", async () => {

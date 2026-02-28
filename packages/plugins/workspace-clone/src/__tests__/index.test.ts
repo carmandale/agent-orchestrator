@@ -50,6 +50,14 @@ function makeProject(overrides?: Partial<ProjectConfig>): ProjectConfig {
   };
 }
 
+function makeSessionRef(projectId = "proj", sessionId = "sess") {
+  return {
+    projectId,
+    project: makeProject(),
+    sessionId,
+  };
+}
+
 // Import after mocks are set up
 import clonePlugin, { manifest, create } from "../index.js";
 
@@ -81,6 +89,11 @@ describe("create()", () => {
   it("returns a Workspace with name 'clone'", () => {
     const workspace = create();
     expect(workspace.name).toBe("clone");
+  });
+
+  it("resolves managed path from session identity", () => {
+    const workspace = create();
+    expect(workspace.resolvePath(makeSessionRef("alpha", "s-12"))).toBe("/mock-home/.ao-clones/alpha/s-12");
   });
 
   it("uses ~/.ao-clones as default base dir", async () => {
@@ -454,7 +467,7 @@ describe("workspace.destroy()", () => {
     const workspace = create();
     (fs.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
-    await workspace.destroy("/mock-home/.ao-clones/proj/sess");
+    await workspace.destroy(makeSessionRef("proj", "sess"));
 
     expect(fs.rmSync).toHaveBeenCalledWith("/mock-home/.ao-clones/proj/sess", {
       recursive: true,
@@ -466,29 +479,27 @@ describe("workspace.destroy()", () => {
     const workspace = create();
     (fs.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
 
-    await expect(
-      workspace.destroy("/mock-home/.ao-clones/proj/nonexistent"),
-    ).resolves.toBeUndefined();
+    await expect(workspace.destroy(makeSessionRef("proj", "nonexistent"))).resolves.toBeUndefined();
 
     expect(fs.rmSync).not.toHaveBeenCalled();
   });
 
-  it("rejects destruction outside managed cloneDir", async () => {
+  it("rejects invalid projectId for destruction", async () => {
     const workspace = create();
 
-    await expect(workspace.destroy("/repo/path")).rejects.toThrow(
-      "Refusing to destroy workspace outside managed cloneDir: /repo/path",
+    await expect(workspace.destroy(makeSessionRef("../repo", "sess"))).rejects.toThrow(
+      'Invalid projectId "../repo"',
     );
 
     expect(fs.existsSync).not.toHaveBeenCalled();
     expect(fs.rmSync).not.toHaveBeenCalled();
   });
 
-  it("rejects destruction of clone base dir itself", async () => {
+  it("rejects invalid sessionId for destruction", async () => {
     const workspace = create();
 
-    await expect(workspace.destroy("/mock-home/.ao-clones")).rejects.toThrow(
-      "Refusing to destroy workspace outside managed cloneDir: /mock-home/.ao-clones",
+    await expect(workspace.destroy(makeSessionRef("proj", "../bad"))).rejects.toThrow(
+      'Invalid sessionId "../bad"',
     );
 
     expect(fs.existsSync).not.toHaveBeenCalled();
