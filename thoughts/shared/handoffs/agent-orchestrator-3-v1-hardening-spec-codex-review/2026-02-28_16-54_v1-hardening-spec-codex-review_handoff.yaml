@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+mode: handoff
+date: 2026-02-28T16:54:59.171Z
+session: "agent-orchestrator-3-v1-hardening-spec-codex-review"
+outcome: "SUCCEEDED"
+primary_bead: "agent-orchestrator-3"
+---
+
+goal: "Create shaping doc for V1 hardening (8 smoke test fixes), get Codex review approval, ready for slice and implement"
+now: "Shaping doc complete and Codex-approved after 4 review rounds (16 issues found and resolved). Ready to slice into implementation tasks and write code."
+
+done_this_session:
+  - "Created bead agent-orchestrator-3 (feature, P1, in_progress)"
+  - "Created specs/002-v1-hardening/shaping.md with 8 requirements (R0-R7) and 8 shape parts (A0-A7)"
+  - "Ran 4-round Codex review loop — 16 total issues surfaced and resolved"
+  - "Round 1: 8 issues (branch timing, status model, port coupling, permissions, security, git truth, error loudness, tests)"
+  - "Round 2: 6 issues (status enum correctness, process group strategy, run state identity, legacy config, output validation, function names)"
+  - "Round 3: 2 issues (path injection in run state filename, legacy branch detection mechanism)"
+  - "Round 4: 0 issues — APPROVED"
+  - "Committed and pushed to main (2 commits: d95104a, 4d1bdb2)"
+
+next:
+  - "Slice the shaping doc into implementation tasks — likely 1 slice since all 8 fixes are independent"
+  - "Create slices.md at specs/002-v1-hardening/slices.md"
+  - "Implement all 8 parts (A0-A7) — ~185 lines across ~10 files"
+  - "Write regression tests for each part (~60 lines across ~5 test files)"
+  - "Run pnpm typecheck && pnpm test to verify"
+  - "Close bead agent-orchestrator-3 when all parts verified"
+
+files:
+  - "specs/002-v1-hardening/shaping.md — THE primary artifact. Read this first."
+  - "specs/001-chip-to-orchestrator/shaping.md — V1 context (predecessor spec)"
+  - "packages/core/src/config.ts — A0 (Zod default), A6 (findConfigFile tilde expansion)"
+  - "packages/core/src/session-manager.ts:276 — A0 (getAgentConfig permissions fallback)"
+  - "packages/cli/src/commands/project-add.ts — A1 (git validation), A2 (branch detection at registration)"
+  - "packages/cli/src/commands/start.ts — A2 (legacy warning), A3+A4 (port scan), A5 (path validation), A7 (TERMINAL_STATUSES check)"
+  - "packages/cli/src/lib/web-dir.ts — A3+A4 (run state file, process group spawn/cleanup)"
+  - "packages/core/src/lifecycle-manager.ts:536,560 — A7 (replace hardcoded merged/killed with TERMINAL_STATUSES)"
+  - "packages/core/src/types.ts:26-42 — Session status enum reference (no 'running' status exists)"
+
+decisions:
+  - "A2: Detect branch at registration time, not runtime — keeps defaultBranch required in ProjectConfig, no schema break"
+  - "A3+A4: Merged into single part with shared run state file — port collision and process cleanup are coupled"
+  - "A3+A4: Hash-derived run state filename (sha256 of configPath:projectName) — prevents path injection from unconstrained z.record() keys"
+  - "A3+A4: Process group kill via detached:true spawn + PGID — verified PID liveness before kill"
+  - "A7: Transition condition is !TERMINAL_STATUSES.has(status), not 'status === running' (which doesn't exist)"
+  - "A7: lifecycle-manager.ts:536,560 must be updated to use TERMINAL_STATUSES instead of hardcoded merged/killed"
+  - "A6: Fail loudly if AO_CONFIG_PATH set but file doesn't exist — don't silently fall back"
+
+findings:
+  - "Session status enum has no 'running' — use 'spawning', 'working', 'pr_open', etc."
+  - "lifecycle-manager.ts hardcodes 'merged'/'killed' at lines 536 and 560 — will miss 'done' status"
+  - "start.ts:203 only checks status !== 'killed' — will block restart for 'done' sessions"
+  - "Dashboard spawns with detached:false (start.ts:84) — must change to detached:true for process group kill"
+  - "Project keys are unconstrained z.record() — raw names unsafe for filesystem paths"
+  - "getAgentConfig() spread merge can produce no permissions even with Zod default (Zod only applies at parse time)"
+  - "loadConfigWithPath() (config.ts:387) returns both config and path — useful for raw YAML inspection"
+  - "assertSafePathSegment pattern exists in workspace-worktree but run state uses hash instead (simpler)"
+
+git:
+  branch: "main"
+  commit: "4d1bdb2543723563c0ed08455e0ff0d171be7cfa"
+  remote: "https://github.com/carmandale/agent-orchestrator.git"
