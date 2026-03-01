@@ -207,7 +207,7 @@ Then use `browser_navigate` as normal. If Playwright was previously used in the 
 - Interpolating user input into shell commands, AppleScript, or GraphQL queries
 - Forgetting to clean up setInterval/setTimeout on disconnect/destroy
 - Using `on("exit")` instead of `once("exit")` for one-time handlers
-- Using `unlinkSync` or `rm` to clean up state files — use `trashFile()` (move to `~/.Trash/`) so files are recoverable
+- Using `unlinkSync` or `rm` to clean up state files — use `trashFile()` which calls the macOS `trash` CLI for Finder-recoverable cleanup
 
 ## Config
 
@@ -221,4 +221,4 @@ Config loaded from `agent-orchestrator.yaml` (see `agent-orchestrator.yaml.examp
 4. **Two-tier event handling** — auto-handle routine issues, notify human when judgment needed
 5. **Backwards-compatible metadata** — flat key=value files
 6. **Security first** — `execFile` not `exec`, validate all external input
-7. **Trash, don't delete** — state file cleanup moves to `~/.Trash/` via `renameSync` (not `unlinkSync`). Files are recoverable via Finder. See `trashFile()` in `packages/cli/src/lib/web-dir.ts`
+7. **Trash, don't delete** — state file cleanup uses the macOS `trash` CLI (proper Finder API with "Put Back" support), falling back to `unlinkSync` when unavailable. See `trashFile()` in `packages/cli/src/lib/web-dir.ts`
