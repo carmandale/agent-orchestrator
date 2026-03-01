@@ -13,7 +13,7 @@ projects:
   ao:
     name: Agent Orchestrator
     repo: ComposioHQ/agent-orchestrator
-    path: ~/agent-orchestrator
+    path: "~/Groove Jones Dropbox/Dale Carman/Projects/dev/agent-orchestrator"
     defaultBranch: main
     sessionPrefix: ao
     scm:

@@ -171,6 +171,7 @@ export function readRunState(configPath: string, projectName: string): RunState 
 /** Move a file to ~/.Trash/ instead of deleting it. Appends a timestamp to avoid collisions. */
 function trashFile(filepath: string): void {
   const trashDir = join(homedir(), ".Trash");
+  mkdirSync(trashDir, { recursive: true });
   const basename = filepath.split("/").pop() ?? "unknown";
   const trashName = `${basename}.${Date.now()}`;
   try {
