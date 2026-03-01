@@ -6,7 +6,7 @@
  * launch time — no file writing required.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import chalk from "chalk";
@@ -113,10 +113,20 @@ async function startDashboard(
  * dashboard process group on Ctrl+C or system termination.
  * Also cleans up on normal dashboard exit.
  */
+/**
+ * Mutable holder for the tmux session name, set after session creation.
+ * Allows the signal handler (registered before session spawn) to kill
+ * the tmux session on cleanup.
+ */
+interface CleanupContext {
+  tmuxSession?: string;
+}
+
 function registerCleanupHandlers(
   configPath: string,
   projectId: string,
   dashboardProcess: ChildProcess,
+  ctx: CleanupContext,
 ): void {
   let cleanedUp = false;
 
@@ -125,6 +135,17 @@ function registerCleanupHandlers(
     cleanedUp = true;
 
     deleteRunState(configPath, projectId);
+
+    // Kill tmux session (orchestrator agent)
+    if (ctx.tmuxSession) {
+      try {
+        execFileSync("tmux", ["kill-session", "-t", ctx.tmuxSession], {
+          timeout: 5_000,
+        });
+      } catch {
+        // Session already dead or tmux not running
+      }
+    }
 
     // Kill dashboard process group
     if (dashboardProcess.pid) {
@@ -151,11 +172,31 @@ function registerCleanupHandlers(
   process.on("SIGINT", onSigint);
   process.on("SIGTERM", onSigterm);
 
-  // Clean up run state on normal dashboard exit too
+  // Clean up everything on normal dashboard exit too (e.g. dashboard killed externally)
   dashboardProcess.on("exit", () => {
     if (!cleanedUp) {
       cleanedUp = true;
       deleteRunState(configPath, projectId);
+
+      // Kill tmux session so it doesn't outlive the dashboard
+      if (ctx.tmuxSession) {
+        try {
+          execFileSync("tmux", ["kill-session", "-t", ctx.tmuxSession], {
+            timeout: 5_000,
+          });
+        } catch {
+          // Session already dead or tmux not running
+        }
+      }
+
+      // Kill dashboard process group to clean up orphaned children (next-server etc.)
+      if (dashboardProcess.pid) {
+        try {
+          process.kill(-dashboardProcess.pid, "SIGTERM");
+        } catch {
+          // Already exited or group doesn't exist
+        }
+      }
     }
   });
 }
@@ -269,6 +310,7 @@ export function registerStart(program: Command): void {
           let dashboardProcess: ChildProcess | null = null;
           let exists = false; // Track whether orchestrator session already exists
           let actualPort = port; // Track resolved port for summary
+          let cleanupCtx: CleanupContext | undefined;
 
           if (opts?.dashboard !== false) {
             const webDir = findWebDir();
@@ -340,7 +382,9 @@ export function registerStart(program: Command): void {
               });
 
               // Gap 1: Register signal handlers to clean up run state on Ctrl+C
-              registerCleanupHandlers(config.configPath, projectId, dashboardProcess);
+              // tmuxSession is set later once the orchestrator session is spawned
+              cleanupCtx = { tmuxSession: undefined };
+              registerCleanupHandlers(config.configPath, projectId, dashboardProcess, cleanupCtx);
             }
 
             spinner.succeed(`Dashboard starting on http://localhost:${actualPort}`);
@@ -369,6 +413,7 @@ export function registerStart(program: Command): void {
               if (existing?.runtimeHandle?.id) {
                 tmuxTarget = existing.runtimeHandle.id;
               }
+              if (cleanupCtx) cleanupCtx.tmuxSession = tmuxTarget;
               console.log(
                 chalk.yellow(
                   `Orchestrator session "${sessionId}" is already running (skipping creation)`,
@@ -394,6 +439,7 @@ export function registerStart(program: Command): void {
                 if (session.runtimeHandle?.id) {
                   tmuxTarget = session.runtimeHandle.id;
                 }
+                if (cleanupCtx) cleanupCtx.tmuxSession = tmuxTarget;
                 spinner.succeed("Orchestrator session created");
               } catch (err) {
                 spinner.fail("Orchestrator setup failed");
