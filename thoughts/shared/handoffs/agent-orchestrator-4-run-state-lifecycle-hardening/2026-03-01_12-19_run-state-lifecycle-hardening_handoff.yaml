@@ -1,0 +1,50 @@
+---
+schema_version: "1.0.0"
+mode: handoff
+date: 2026-03-01T12:19:08.380Z
+session: "agent-orchestrator-4-run-state-lifecycle-hardening"
+outcome: "SUCCEEDED"
+primary_bead: "agent-orchestrator-4"
+---
+
+goal: "Harden dashboard run state lifecycle by closing 5 gaps: Ctrl+C cleanup, stale sweep on start, double-start guard, legacy lsof port range fix, and PID recycling detection via ps -o lstart="
+now: "All 5 gaps implemented and tested. 3 commits pushed: feat (5 gap fixes), fix (trash-based deletion), docs (CLAUDE.md trash pattern). 12 new tests, 154 total passing. Visual flowchart created at ~/.agent/diagrams/dashboard-run-state-lifecycle.html. Bead agent-orchestrator-4 closed."
+
+done_this_session:
+  - "Extended RunState interface with processStartTime field for PID recycling detection"
+  - "Added getProcessStartTime(), isRunStateLive(), listAllRunStates(), sweepStaleRunStates() to web-dir.ts"
+  - "Added trashFile() helper — moves to ~/.Trash/ instead of unlinkSync (safety pattern)"
+  - "Wired stale sweep, double-start guard, signal handlers, processStartTime into ao start"
+  - "Fixed ao stop legacy lsof fallback to scan port range (configured +10)"
+  - "Refactored ao stop PID liveness to use isRunStateLive()"
+  - "Created 12 new tests in run-state.test.ts (all passing)"
+  - "Created visual flowchart: ~/.agent/diagrams/dashboard-run-state-lifecycle.html"
+  - "Documented trash-based cleanup pattern in CLAUDE.md (Design Decision #7)"
+
+next:
+  - "Manual smoke test: ao start → Ctrl+C → verify no stale run state file"
+  - "Manual smoke test: ao start → ao start again → verify 'already running' error"
+  - "Manual smoke test: ao start → ao stop → verify clean shutdown and file trashed"
+  - "Consider adding sweepStaleRunStates to ao stop as well (currently only on start)"
+
+decisions:
+  - "ps -o lstart= over /proc/PID/stat — macOS has no /proc, works cross-platform"
+  - "Signal re-raise pattern for correct exit code (128 + signum)"
+  - "Trash-based deletion (renameSync to ~/.Trash/) after previous safety incident where unlinkSync deleted source repo"
+  - "Hash-based filenames (sha256 of configPath:projectName) to prevent path injection"
+
+files:
+  - "packages/cli/src/lib/web-dir.ts — trashFile, getProcessStartTime, isRunStateLive, listAllRunStates, sweepStaleRunStates"
+  - "packages/cli/src/commands/start.ts — registerCleanupHandlers, stale sweep, double-start guard, processStartTime"
+  - "packages/cli/__tests__/lib/run-state.test.ts — 12 tests for run state utilities"
+  - "CLAUDE.md — Design Decision #7 (trash-based cleanup), Common Mistakes (unlinkSync)"
+  - "~/.agent/diagrams/dashboard-run-state-lifecycle.html — visual lifecycle flowchart"
+
+test:
+  status: "pass"
+  detail: "154 tests across 14 files, 12 new run-state tests"
+
+git:
+  branch: "main"
+  commit: "6856ccb74e45582299c8b91107653a0673e84bc8"
+  remote: "https://github.com/carmandale/agent-orchestrator.git"
