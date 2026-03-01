@@ -168,15 +168,28 @@ export function readRunState(configPath: string, projectName: string): RunState 
   }
 }
 
-/** Delete run state file. */
+/** Move a file to ~/.Trash/ instead of deleting it. Appends a timestamp to avoid collisions. */
+function trashFile(filepath: string): void {
+  const trashDir = join(homedir(), ".Trash");
+  const basename = filepath.split("/").pop() ?? "unknown";
+  const trashName = `${basename}.${Date.now()}`;
+  try {
+    renameSync(filepath, join(trashDir, trashName));
+  } catch {
+    // Cross-device or already gone — fall back to unlink as last resort
+    try {
+      unlinkSync(filepath);
+    } catch {
+      // Already gone — fine
+    }
+  }
+}
+
+/** Delete run state file (moves to Trash for disaster recovery). */
 export function deleteRunState(configPath: string, projectName: string): void {
   const filename = runStateFilename(configPath, projectName);
   const filepath = join(RUN_STATE_DIR, filename);
-  try {
-    unlinkSync(filepath);
-  } catch {
-    // Already gone — fine
-  }
+  trashFile(filepath);
 }
 
 /** Get the process start time via `ps -o lstart=`. Returns null if the process doesn't exist. */
@@ -233,7 +246,7 @@ export function listAllRunStates(): Array<{ filename: string; state: RunState }>
   return results;
 }
 
-/** Remove run state files whose processes are no longer alive. Returns count deleted. */
+/** Remove run state files whose processes are no longer alive. Returns count trashed. */
 export async function sweepStaleRunStates(): Promise<number> {
   const all = listAllRunStates();
   let cleaned = 0;
@@ -241,12 +254,8 @@ export async function sweepStaleRunStates(): Promise<number> {
   for (const { filename, state } of all) {
     const live = await isRunStateLive(state);
     if (!live) {
-      try {
-        unlinkSync(join(RUN_STATE_DIR, filename));
-        cleaned++;
-      } catch {
-        // Best effort
-      }
+      trashFile(join(RUN_STATE_DIR, filename));
+      cleaned++;
     }
   }
 
