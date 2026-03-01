@@ -30,6 +30,9 @@ import {
   writeRunState,
   readRunState,
   deleteRunState,
+  getProcessStartTime,
+  isRunStateLive,
+  sweepStaleRunStates,
   type RunState,
 } from "../lib/web-dir.js";
 import {
@@ -103,6 +106,58 @@ async function startDashboard(
   });
 
   return child;
+}
+
+/**
+ * Register SIGINT/SIGTERM handlers that clean up run state and kill the
+ * dashboard process group on Ctrl+C or system termination.
+ * Also cleans up on normal dashboard exit.
+ */
+function registerCleanupHandlers(
+  configPath: string,
+  projectId: string,
+  dashboardProcess: ChildProcess,
+): void {
+  let cleanedUp = false;
+
+  function cleanup(signal: NodeJS.Signals): void {
+    if (cleanedUp) return;
+    cleanedUp = true;
+
+    deleteRunState(configPath, projectId);
+
+    // Kill dashboard process group
+    if (dashboardProcess.pid) {
+      try {
+        process.kill(-dashboardProcess.pid, "SIGTERM");
+      } catch {
+        // Already exited
+      }
+    }
+
+    // Remove our listeners, re-raise signal for correct exit code (128 + signum)
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+    process.kill(process.pid, signal);
+  }
+
+  function onSigint(): void {
+    cleanup("SIGINT");
+  }
+  function onSigterm(): void {
+    cleanup("SIGTERM");
+  }
+
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+
+  // Clean up run state on normal dashboard exit too
+  dashboardProcess.on("exit", () => {
+    if (!cleanedUp) {
+      cleanedUp = true;
+      deleteRunState(configPath, projectId);
+    }
+  });
 }
 
 /**
@@ -183,6 +238,32 @@ export function registerStart(program: Command): void {
 
           console.log(chalk.bold(`\nStarting orchestrator for ${chalk.cyan(project.name)}\n`));
 
+          // Gap 2: Sweep stale run state files from dead processes
+          try {
+            const swept = await sweepStaleRunStates();
+            if (swept > 0) {
+              console.log(chalk.dim(`Cleaned ${swept} stale run state file${swept > 1 ? "s" : ""}`));
+            }
+          } catch {
+            // Best effort — don't block fresh starts
+          }
+
+          // Gap 3: Double-start guard — refuse if this project's dashboard is already running
+          if (configPath) {
+            const existing = readRunState(configPath, projectId);
+            if (existing) {
+              const live = await isRunStateLive(existing);
+              if (live) {
+                throw new Error(
+                  `Dashboard for "${projectId}" is already running on port ${existing.dashboardPort}.\n` +
+                  `  Stop it first:  ao stop ${projectArg ?? ""}`,
+                );
+              }
+              // Stale — clean up and continue
+              deleteRunState(configPath, projectId);
+            }
+          }
+
           // Start dashboard (unless --no-dashboard)
           const spinner = ora();
           let dashboardProcess: ChildProcess | null = null;
@@ -243,6 +324,10 @@ export function registerStart(program: Command): void {
                 parseInt(env["TERMINAL_PORT"], 10),
                 parseInt(env["DIRECT_TERMINAL_PORT"], 10),
               ].filter((p) => !isNaN(p));
+
+              // Gap 5: Record process start time for PID recycling detection
+              const processStartTime = await getProcessStartTime(dashboardProcess.pid);
+
               writeRunState(config.configPath, projectId, {
                 configPath: config.configPath,
                 projectName: projectId,
@@ -251,7 +336,11 @@ export function registerStart(program: Command): void {
                 terminalPorts,
                 startedAt: new Date().toISOString(),
                 pgid: dashboardProcess.pid, // detached spawn: PID === PGID
+                ...(processStartTime ? { processStartTime } : {}),
               });
+
+              // Gap 1: Register signal handlers to clean up run state on Ctrl+C
+              registerCleanupHandlers(config.configPath, projectId, dashboardProcess);
             }
 
             spinner.succeed(`Dashboard starting on http://localhost:${actualPort}`);
@@ -392,14 +481,8 @@ export function registerStop(program: Command): void {
           : null;
 
         if (runState) {
-          // Verify PID liveness before killing
-          let pidAlive = false;
-          try {
-            process.kill(runState.pgid, 0); // signal 0 = check existence
-            pidAlive = true;
-          } catch {
-            // PID doesn't exist — stale run state
-          }
+          // Verify PID liveness (includes PID recycling check)
+          const pidAlive = await isRunStateLive(runState);
 
           if (pidAlive) {
             try {
@@ -416,9 +499,21 @@ export function registerStop(program: Command): void {
             deleteRunState(config.configPath, projectId);
           }
         } else {
-          // Legacy fallback: no run state file — try lsof on configured port
+          // Legacy fallback: no run state file — scan port range (configured port through +10)
           console.log(chalk.dim("No run state found — falling back to port-based cleanup"));
-          await stopDashboard(port);
+          let stopped = false;
+          for (let offset = 0; offset <= 10; offset++) {
+            const scanPort = port + offset;
+            const pid = await findRunningDashboardPid(scanPort);
+            if (pid) {
+              await stopDashboard(scanPort);
+              stopped = true;
+              break;
+            }
+          }
+          if (!stopped) {
+            console.log(chalk.yellow(`Dashboard not running on ports ${port}–${port + 10}`));
+          }
         }
 
         console.log(chalk.bold.green("\n✓ Orchestrator stopped\n"));

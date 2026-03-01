@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -17,6 +18,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname, join } from "node:path";
+import { execSilent } from "./shell.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -140,6 +142,8 @@ export interface RunState {
   terminalPorts: number[];
   startedAt: string;
   pgid: number;
+  /** Process start time from `ps -o lstart=`. Used to detect PID recycling. */
+  processStartTime?: string;
 }
 
 /** Write run state atomically (write to .tmp, rename). */
@@ -173,6 +177,80 @@ export function deleteRunState(configPath: string, projectName: string): void {
   } catch {
     // Already gone — fine
   }
+}
+
+/** Get the process start time via `ps -o lstart=`. Returns null if the process doesn't exist. */
+export async function getProcessStartTime(pid: number): Promise<string | null> {
+  const output = await execSilent("ps", ["-o", "lstart=", "-p", String(pid)]);
+  return output?.trim() || null;
+}
+
+/** Check if a run state's process is still alive (not recycled). */
+export async function isRunStateLive(state: RunState): Promise<boolean> {
+  try {
+    process.kill(state.pgid, 0); // signal 0 = check existence
+  } catch {
+    return false;
+  }
+
+  // If we recorded start time, verify it still matches (PID recycling guard)
+  if (state.processStartTime) {
+    const currentStartTime = await getProcessStartTime(state.dashboardPid);
+    if (currentStartTime !== state.processStartTime) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/** List all run state files. Skips corrupt/unparseable files. */
+export function listAllRunStates(): Array<{ filename: string; state: RunState }> {
+  if (!existsSync(RUN_STATE_DIR)) return [];
+
+  const results: Array<{ filename: string; state: RunState }> = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(RUN_STATE_DIR);
+  } catch {
+    return [];
+  }
+
+  for (const filename of entries) {
+    if (!filename.endsWith(".json")) continue;
+    try {
+      const content = readFileSync(join(RUN_STATE_DIR, filename), "utf-8");
+      const state = JSON.parse(content) as RunState;
+      // Basic shape validation
+      if (typeof state.dashboardPid === "number" && typeof state.pgid === "number") {
+        results.push({ filename, state });
+      }
+    } catch {
+      // Corrupt file — skip
+    }
+  }
+
+  return results;
+}
+
+/** Remove run state files whose processes are no longer alive. Returns count deleted. */
+export async function sweepStaleRunStates(): Promise<number> {
+  const all = listAllRunStates();
+  let cleaned = 0;
+
+  for (const { filename, state } of all) {
+    const live = await isRunStateLive(state);
+    if (!live) {
+      try {
+        unlinkSync(join(RUN_STATE_DIR, filename));
+        cleaned++;
+      } catch {
+        // Best effort
+      }
+    }
+  }
+
+  return cleaned;
 }
 
 // =============================================================================
