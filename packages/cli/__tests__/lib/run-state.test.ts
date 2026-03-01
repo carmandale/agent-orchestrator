@@ -1,20 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, existsSync, readdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readdirSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 // Hoist ALL mocks — these run before any module-level initializers
-const { mockExecFile, testRunDir } = vi.hoisted(() => {
+const { mockExecFile, mockExecFileSync, testRunDir } = vi.hoisted(() => {
   const { tmpdir: _tmpdir } = require("node:os");
   const { join: _join } = require("node:path");
   return {
     mockExecFile: vi.fn(),
+    mockExecFileSync: vi.fn(),
     testRunDir: _join(_tmpdir(), `ao-run-state-test-${process.pid}`),
   };
 });
 
 vi.mock("node:child_process", () => ({
   execFile: mockExecFile,
+  execFileSync: mockExecFileSync,
 }));
 
 // Mock homedir to control RUN_STATE_DIR
@@ -61,6 +63,24 @@ function mockPsFailure(): void {
   );
 }
 
+/**
+ * Mock the `trash` CLI: simulate by moving the file to our test TRASH_DIR.
+ * This mimics what the real `trash` command does (move to ~/.Trash).
+ */
+function mockTrashCli(): void {
+  mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+    if (cmd === "trash" && args.length > 0) {
+      const filepath = args[0];
+      if (existsSync(filepath)) {
+        mkdirSync(TRASH_DIR, { recursive: true });
+        const basename = filepath.split("/").pop() ?? "unknown";
+        renameSync(filepath, join(TRASH_DIR, `${basename}.${Date.now()}`));
+      }
+    }
+    return Buffer.from("");
+  });
+}
+
 function writeTestRunState(filename: string, state: Partial<RunState>): void {
   mkdirSync(RUN_STATE_DIR, { recursive: true });
   writeFileSync(join(RUN_STATE_DIR, filename), JSON.stringify(state));
@@ -85,9 +105,9 @@ function cleanTestDirs(): void {
 
 beforeEach(() => {
   mockExecFile.mockReset();
+  mockExecFileSync.mockReset();
+  mockTrashCli();
   cleanTestDirs();
-  // Ensure Trash dir exists for renameSync in trashFile
-  mkdirSync(TRASH_DIR, { recursive: true });
 });
 
 afterEach(() => {
@@ -269,15 +289,20 @@ describe("sweepStaleRunStates", () => {
     expect(remaining).toHaveLength(1);
     expect(remaining[0].state.projectName).toBe("alive");
 
-    // Verify dead files were moved to Trash, not permanently deleted
+    // Verify trash CLI was called for each dead file
+    const trashCalls = mockExecFileSync.mock.calls.filter(
+      (c: string[]) => c[0] === "trash",
+    );
+    expect(trashCalls).toHaveLength(2);
+
+    // Verify dead files were moved to Trash
     const trashedFiles = readdirSync(TRASH_DIR);
     expect(trashedFiles.length).toBe(2);
-    expect(trashedFiles.every((f) => f.endsWith(".json") || f.includes(".json."))).toBe(true);
   });
 });
 
 describe("deleteRunState", () => {
-  it("moves file to Trash instead of permanently deleting", () => {
+  it("calls trash CLI to move file", () => {
     writeTestRunState("test-delete.json", {
       configPath: "/test/config.yaml",
       projectName: "myproject",
@@ -292,11 +317,16 @@ describe("deleteRunState", () => {
     // use the actual function which computes the hash
     deleteRunState("/test/config.yaml", "myproject");
 
-    // File should be gone from run state dir
+    // test-delete.json remains (wrong hash name), hash-named file was trashed
     const remaining = listAllRunStates();
-    expect(remaining).toHaveLength(1); // test-delete.json remains (wrong hash name)
+    expect(remaining).toHaveLength(1);
 
-    // But let's also test with a file we know the name of via writeRunState
+    // Verify trash was called
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "trash",
+      expect.arrayContaining([expect.stringContaining(".json")]),
+      expect.any(Object),
+    );
   });
 
   it("moves the correct hash-named file to Trash", () => {
@@ -323,5 +353,30 @@ describe("deleteRunState", () => {
     // File should be in Trash
     const trashed = readdirSync(TRASH_DIR);
     expect(trashed.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("falls back to unlink when trash CLI is unavailable", () => {
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error("trash: command not found");
+    });
+
+    writeRunState("/fallback/config.yaml", "proj2", {
+      configPath: "/fallback/config.yaml",
+      projectName: "proj2",
+      dashboardPid: 9999,
+      pgid: 9999,
+      dashboardPort: 3000,
+      terminalPorts: [],
+      startedAt: "2026-01-01",
+    });
+
+    const before = readdirSync(RUN_STATE_DIR).filter((f) => f.endsWith(".json"));
+    expect(before.length).toBeGreaterThanOrEqual(1);
+
+    deleteRunState("/fallback/config.yaml", "proj2");
+
+    // File should still be gone (via unlinkSync fallback)
+    const after = readdirSync(RUN_STATE_DIR).filter((f) => f.endsWith(".json"));
+    expect(after.length).toBe(before.length - 1);
   });
 });

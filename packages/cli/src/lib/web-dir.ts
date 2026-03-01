@@ -3,6 +3,7 @@
  * Shared utility to avoid duplication between dashboard.ts and start.ts.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -168,16 +169,12 @@ export function readRunState(configPath: string, projectName: string): RunState 
   }
 }
 
-/** Move a file to ~/.Trash/ instead of deleting it. Appends a timestamp to avoid collisions. */
+/** Move a file to macOS Trash via the `trash` CLI (supports Finder "Put Back"). */
 function trashFile(filepath: string): void {
-  const trashDir = join(homedir(), ".Trash");
-  mkdirSync(trashDir, { recursive: true, mode: 0o700 });
-  const basename = filepath.split("/").pop() ?? "unknown";
-  const trashName = `${basename}.${Date.now()}`;
   try {
-    renameSync(filepath, join(trashDir, trashName));
+    execFileSync("trash", [filepath], { timeout: 5_000 });
   } catch {
-    // Cross-device or already gone — fall back to unlink as last resort
+    // trash CLI unavailable or file already gone — fall back to unlink
     try {
       unlinkSync(filepath);
     } catch {
