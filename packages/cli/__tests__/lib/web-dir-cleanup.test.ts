@@ -93,7 +93,7 @@ afterEach(() => {
 });
 
 describe("cleanupRunState", () => {
-  it("kills process group, tmux session, and deletes run state", () => {
+  it("kills parent, process group, tmux session, and deletes run state", () => {
     // Write a run state so deleteRunState has something to delete
     writeRunState(testState.configPath, testState.projectName, testState);
 
@@ -104,10 +104,12 @@ describe("cleanupRunState", () => {
       configPath: testState.configPath,
       projectName: testState.projectName,
       pgid: testState.pgid,
+      parentPid: 99999,
       tmuxSession: testState.tmuxSession,
     });
 
-    // Verify process group was killed (negative PID = process group)
+    // Verify parent was killed first, then process group
+    expect(killSpy).toHaveBeenCalledWith(99999, "SIGTERM");
     expect(killSpy).toHaveBeenCalledWith(-testState.pgid, "SIGTERM");
 
     // Verify tmux kill-session was called
@@ -144,6 +146,31 @@ describe("cleanupRunState", () => {
       (c: string[]) => c[0] === "tmux",
     );
     expect(tmuxCalls).toHaveLength(1);
+
+    killSpy.mockRestore();
+  });
+
+  it("skips killing parentPid when it equals current process (self-kill guard)", () => {
+    writeRunState(testState.configPath, testState.projectName, testState);
+
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+    cleanupRunState({
+      configPath: testState.configPath,
+      projectName: testState.projectName,
+      pgid: testState.pgid,
+      parentPid: process.pid, // same as current process — should be skipped
+      tmuxSession: testState.tmuxSession,
+    });
+
+    // Should NOT have killed parentPid (would be self-kill)
+    const parentKillCalls = killSpy.mock.calls.filter(
+      (c) => c[0] === process.pid && c[1] === "SIGTERM",
+    );
+    expect(parentKillCalls).toHaveLength(0);
+
+    // Should still have killed the process group
+    expect(killSpy).toHaveBeenCalledWith(-testState.pgid, "SIGTERM");
 
     killSpy.mockRestore();
   });

@@ -149,6 +149,8 @@ export const RunStateSchema = z.object({
   processStartTime: z.string().optional(),
   /** tmux session name — allows `ao stop` to kill the orchestrator session. */
   tmuxSession: z.string().optional(),
+  /** PID of the `ao start` parent process — kill this to trigger signal-handler cleanup. */
+  parentPid: z.number().int().positive().optional(),
 });
 
 export type RunState = z.infer<typeof RunStateSchema>;
@@ -208,9 +210,20 @@ export function cleanupRunState(opts: {
   configPath: string;
   projectName: string;
   pgid?: number;
+  parentPid?: number;
   tmuxSession?: string;
 }): void {
-  // 1. Kill process group (dashboard + all terminal WS children)
+  // 1. Kill parent `ao start` process — triggers its signal handler for orderly cleanup.
+  //    Skip if we ARE the parent (signal handler already running).
+  if (opts.parentPid && opts.parentPid !== process.pid) {
+    try {
+      process.kill(opts.parentPid, "SIGTERM");
+    } catch {
+      // Already exited
+    }
+  }
+
+  // 2. Kill process group (dashboard + all terminal WS children)
   if (opts.pgid) {
     try {
       process.kill(-opts.pgid, "SIGTERM");
@@ -219,7 +232,7 @@ export function cleanupRunState(opts: {
     }
   }
 
-  // 2. Kill tmux session (orchestrator agent)
+  // 3. Kill tmux session (orchestrator agent)
   if (opts.tmuxSession) {
     try {
       execFileSync("tmux", ["kill-session", "-t", opts.tmuxSession], {
@@ -230,7 +243,7 @@ export function cleanupRunState(opts: {
     }
   }
 
-  // 3. Delete run state file
+  // 4. Delete run state file
   deleteRunState(opts.configPath, opts.projectName);
 }
 

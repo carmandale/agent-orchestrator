@@ -131,22 +131,20 @@ function registerCleanupHandlers(
 ): void {
   let cleanedUp = false;
 
-  function doCleanup(source: string): void {
+  function doCleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
 
-    console.error(`[ao:cleanup] triggered by: ${source} (parent PID ${process.pid})`);
     cleanupRunState({
       configPath,
       projectName: projectId,
       pgid: dashboardProcess.pid ?? undefined,
       tmuxSession: ctx.tmuxSession,
     });
-    console.error("[ao:cleanup] done");
   }
 
   function onSignal(signal: NodeJS.Signals): void {
-    doCleanup(`signal:${signal}`);
+    doCleanup();
 
     // Remove our listeners, re-raise signal for correct exit code (128 + signum)
     process.removeListener("SIGINT", onSigint);
@@ -165,9 +163,8 @@ function registerCleanupHandlers(
   process.on("SIGTERM", onSigterm);
 
   // Clean up everything on normal dashboard exit too (e.g. dashboard killed externally)
-  dashboardProcess.on("exit", (code, signal) => {
-    console.error(`[ao:cleanup] dashboard.on("exit") fired — code=${code} signal=${signal}`);
-    doCleanup("dashboard-exit");
+  dashboardProcess.on("exit", () => {
+    doCleanup();
   });
 }
 
@@ -370,6 +367,7 @@ export function registerStart(program: Command): void {
                 terminalPorts,
                 startedAt: new Date().toISOString(),
                 pgid: dashboardProcess.pid, // detached spawn: PID === PGID
+                parentPid: process.pid, // ao start parent — kill this to trigger signal-handler cleanup
                 ...(processStartTime ? { processStartTime } : {}),
               });
 
@@ -534,11 +532,12 @@ export function registerStop(program: Command): void {
           const pidAlive = await isRunStateLive(runState);
 
           if (pidAlive) {
-            // Use consolidated cleanup (kills pgid + tmux + deletes run state)
+            // Use consolidated cleanup (kills parent + pgid + tmux + deletes run state)
             cleanupRunState({
               configPath: runState.configPath,
               projectName: runState.projectName,
               pgid: runState.pgid,
+              parentPid: runState.parentPid,
               tmuxSession: runState.tmuxSession,
             });
             console.log(chalk.green(`Dashboard stopped (process group ${runState.pgid})`));
