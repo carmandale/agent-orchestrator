@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+mode: handoff
+date: 2026-03-02T09:47:25.811Z
+session: "agent-orchestrator-5-e2e-test-chip-process-cleanup"
+outcome: "SUCCEEDED"
+primary_bead: "agent-orchestrator-5"
+---
+
+goal: "E2E test ao start/stop lifecycle via Chip (Mac mini) + fix bugs found during testing. Then get Codex review on the remaining process cleanup plan."
+now: "All 3 e2e tests pass. Signal cleanup bug fixed (commit 5552d42). Codex-approved plan (v3) ready for implementation: isAoProcess identity utility, shared cleanupRunState helper, run state validation, stale-run-state branch fix."
+
+done_this_session:
+  - "Ran 3 e2e tests via Chip (OpenClaw on Mac mini → SSH → laptop → ao start)"
+  - "Test 1 (happy path): ao start → agent created /tmp/ao-e2e-test/hello.ts → ao stop → clean shutdown PASS"
+  - "Test 2 (double-start guard): second ao start rejected with already-running error PASS"
+  - "Test 3 (signal cleanup): kill dashboard PID → verify all cleanup PASS (after 2 bug fixes)"
+  - "Bug fix 1: SIGTERM/exit handlers now kill tmux session via CleanupContext pattern"
+  - "Bug fix 2: Dashboard exit handler now kills process group to prevent orphaned next-server"
+  - "Updated napkin.md with Chip/SSH infrastructure context"
+  - "Codex review of remaining process cleanup plan — approved after 3 rounds (v3)"
+  - "155 unit tests pass after changes"
+
+next:
+  - "Implement Codex-approved plan v3 (specs/003-process-cleanup) — 6 items:"
+  - "  Item 1: isAoProcess(pid) canonical identity utility (~15 lines)"
+  - "  Item 2: Shared cleanupRunState() with kill→verify→delete ordering (~60 lines)"
+  - "  Item 3: Persist tmuxSession in run state file (~10 lines)"
+  - "  Item 4: Fix ao stop stale-run-state-present branch (~10 lines)"
+  - "  Item 5: Identity validation in stopDashboard + --rebuild paths (~15 lines)"
+  - "  Item 6: Zod validation for RunState before destructive operations (~15 lines)"
+  - "  Item 7: Validate terminal WS port leak is fixed by Item 4 (0 lines expected)"
+  - "New test files: __tests__/lib/web-dir-cleanup.test.ts and __tests__/commands/start-stop.test.ts"
+  - "E2E re-validation via Chip after implementation"
+
+decisions:
+  - "Kill-first-delete-last ordering for cleanup (preserves recovery metadata on partial failure)"
+  - "Signal handlers stay fast/best-effort — deep verify-escalation only in ao stop path"
+  - "Single isAoProcess() utility reused in all kill paths (identity gate contract)"
+  - "Pre-kill identity gate: validate leader command line + processStartTime before kill(-pgid)"
+
+findings:
+  - "Dashboard spawned with detached:true makes PID=PGID, but children (next-server) can still orphan when leader is killed individually (not via group kill)"
+  - "Terminal WS port leak (14800/14801) likely caused by stale-run-state branch skipping cleanup, not by spawn topology"
+  - "Chip (OpenClaw) correctly refuses commands from unidentified senders — good security posture"
+  - "SSH to mini-ts works for cross-machine agent messaging: ssh mini-ts 'openclaw agent -m ... --agent main --deliver --channel telegram'"
+
+files:
+  - "packages/cli/src/commands/start.ts — signal handler + dashboard exit handler fix"
+  - ".claude/napkin.md — Chip/SSH infrastructure context added"
+
+test:
+  passed: 155
+  failed: 0
+  e2e_tests:
+    - "happy path (start/work/stop): PASS"
+    - "double-start guard: PASS"
+    - "signal cleanup (SIGTERM): PASS (after 2 bug fixes)"
+
+git:
+  branch: "main"
+  commit: "5552d42e62a36bbc0a9708dc29d09646d9a01d0e"
+  remote: "https://github.com/carmandale/agent-orchestrator.git"
