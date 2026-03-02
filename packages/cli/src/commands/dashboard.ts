@@ -6,6 +6,7 @@ import type { Command } from "commander";
 import { loadConfig } from "@composio/ao-core";
 import { findWebDir, buildDashboardEnv } from "../lib/web-dir.js";
 import { cleanNextCache, findRunningDashboardPid, findProcessWebDir, waitForPortFree } from "../lib/dashboard-rebuild.js";
+import { isAoProcess } from "../lib/process-identity.js";
 
 export function registerDashboard(program: Command): void {
   program
@@ -41,17 +42,24 @@ export function registerDashboard(program: Command): void {
         const targetWebDir = runningWebDir ?? localWebDir;
 
         if (runningPid) {
-          // Kill the running server, clean .next, then start fresh below.
-          console.log(
-            chalk.dim(`Stopping dashboard (PID ${runningPid}) on port ${port}...`),
-          );
-          try {
-            process.kill(parseInt(runningPid, 10), "SIGTERM");
-          } catch {
-            // Process already exited (ESRCH) — that's fine
+          const pidNum = parseInt(runningPid, 10);
+          // Identity gate: only kill if it's an ao process
+          if (await isAoProcess(pidNum)) {
+            console.log(
+              chalk.dim(`Stopping dashboard (PID ${runningPid}) on port ${port}...`),
+            );
+            try {
+              process.kill(pidNum, "SIGTERM");
+            } catch {
+              // Process already exited (ESRCH) — that's fine
+            }
+            // Wait for port to be released
+            await waitForPortFree(port, 5000);
+          } else {
+            console.log(
+              chalk.yellow(`Port ${port} in use by non-ao process (PID ${runningPid}) — skipping kill`),
+            );
           }
-          // Wait for port to be released
-          await waitForPortFree(port, 5000);
         }
 
         await cleanNextCache(targetWebDir);

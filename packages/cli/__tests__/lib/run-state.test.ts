@@ -36,6 +36,8 @@ import {
   sweepStaleRunStates,
   deleteRunState,
   writeRunState,
+  readRunState,
+  RunStateSchema,
   type RunState,
 } from "../../src/lib/web-dir.js";
 
@@ -378,5 +380,246 @@ describe("deleteRunState", () => {
     // File should still be gone (via unlinkSync fallback)
     const after = readdirSync(RUN_STATE_DIR).filter((f) => f.endsWith(".json"));
     expect(after.length).toBe(before.length - 1);
+  });
+});
+
+describe("RunStateSchema (Zod validation)", () => {
+  it("accepts a valid RunState", () => {
+    const valid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: 1234,
+      dashboardPort: 3000,
+      terminalPorts: [14800, 14801],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+    };
+    const result = RunStateSchema.safeParse(valid);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a RunState with tmuxSession field", () => {
+    const valid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: 1234,
+      dashboardPort: 3000,
+      terminalPorts: [14800, 14801],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+      tmuxSession: "ao-orchestrator-abc123",
+    };
+    const result = RunStateSchema.safeParse(valid);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.tmuxSession).toBe("ao-orchestrator-abc123");
+    }
+  });
+
+  it("accepts a RunState with processStartTime", () => {
+    const valid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: 1234,
+      dashboardPort: 3000,
+      terminalPorts: [],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+      processStartTime: "Thu Jan  1 00:00:00 2026",
+    };
+    const result = RunStateSchema.safeParse(valid);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects negative PIDs", () => {
+    const invalid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: -1,
+      dashboardPort: 3000,
+      terminalPorts: [],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+    };
+    const result = RunStateSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects zero PIDs", () => {
+    const invalid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: 0,
+      dashboardPort: 3000,
+      terminalPorts: [],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 0,
+    };
+    const result = RunStateSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects out-of-range ports", () => {
+    const invalid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: 1234,
+      dashboardPort: 70000,
+      terminalPorts: [],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+    };
+    const result = RunStateSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects port 0", () => {
+    const invalid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: 1234,
+      dashboardPort: 0,
+      terminalPorts: [],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+    };
+    const result = RunStateSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects non-integer PIDs", () => {
+    const invalid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: 12.5,
+      dashboardPort: 3000,
+      terminalPorts: [],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+    };
+    const result = RunStateSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects missing required fields", () => {
+    const invalid = {
+      configPath: "/test/config.yaml",
+      // Missing projectName, dashboardPid, etc.
+    };
+    const result = RunStateSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects string PIDs (wrong type)", () => {
+    const invalid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: "1234",
+      dashboardPort: 3000,
+      terminalPorts: [],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+    };
+    const result = RunStateSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid terminal port values", () => {
+    const invalid = {
+      configPath: "/test/config.yaml",
+      projectName: "myproject",
+      dashboardPid: 1234,
+      dashboardPort: 3000,
+      terminalPorts: [14800, -5],
+      startedAt: "2026-01-01T00:00:00Z",
+      pgid: 1234,
+    };
+    const result = RunStateSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("readRunState with Zod validation", () => {
+  it("returns null for invalid JSON structure (bad types)", () => {
+    // Write a file with wrong types directly to the run state dir
+    writeRunState("/zod-test/config.yaml", "proj-zod", {
+      configPath: "/zod-test/config.yaml",
+      projectName: "proj-zod",
+      dashboardPid: 1234,
+      dashboardPort: 3000,
+      terminalPorts: [],
+      startedAt: "2026-01-01",
+      pgid: 1234,
+    });
+
+    // Verify it reads back fine
+    const valid = readRunState("/zod-test/config.yaml", "proj-zod");
+    expect(valid).not.toBeNull();
+    expect(valid?.dashboardPid).toBe(1234);
+  });
+
+  it("reads back tmuxSession field", () => {
+    writeRunState("/tmux-test/config.yaml", "proj-tmux", {
+      configPath: "/tmux-test/config.yaml",
+      projectName: "proj-tmux",
+      dashboardPid: 5678,
+      dashboardPort: 3001,
+      terminalPorts: [14800],
+      startedAt: "2026-01-01",
+      pgid: 5678,
+      tmuxSession: "ao-orch-xyz",
+    });
+
+    const state = readRunState("/tmux-test/config.yaml", "proj-tmux");
+    expect(state).not.toBeNull();
+    expect(state?.tmuxSession).toBe("ao-orch-xyz");
+  });
+});
+
+describe("listAllRunStates with Zod validation", () => {
+  it("skips files with invalid schema (wrong types)", () => {
+    // Write a valid entry
+    writeTestRunState("valid.json", {
+      configPath: "/a",
+      projectName: "p1",
+      dashboardPid: 1234,
+      pgid: 1234,
+      dashboardPort: 3000,
+      terminalPorts: [],
+      startedAt: "2026-01-01",
+    });
+
+    // Write an invalid entry (string PID)
+    mkdirSync(RUN_STATE_DIR, { recursive: true });
+    writeFileSync(
+      join(RUN_STATE_DIR, "bad-types.json"),
+      JSON.stringify({
+        configPath: "/b",
+        projectName: "p2",
+        dashboardPid: "not-a-number",
+        pgid: "also-not",
+        dashboardPort: 3001,
+        terminalPorts: [],
+        startedAt: "2026-01-02",
+      }),
+    );
+
+    // Write another invalid entry (negative PID)
+    writeFileSync(
+      join(RUN_STATE_DIR, "negative-pid.json"),
+      JSON.stringify({
+        configPath: "/c",
+        projectName: "p3",
+        dashboardPid: -999,
+        pgid: -999,
+        dashboardPort: 3002,
+        terminalPorts: [],
+        startedAt: "2026-01-03",
+      }),
+    );
+
+    const results = listAllRunStates();
+    expect(results).toHaveLength(1);
+    expect(results[0].state.projectName).toBe("p1");
   });
 });

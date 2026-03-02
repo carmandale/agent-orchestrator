@@ -6,7 +6,7 @@
  * launch time — no file writing required.
  */
 
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import chalk from "chalk";
@@ -30,16 +30,17 @@ import {
   writeRunState,
   readRunState,
   deleteRunState,
+  cleanupRunState,
   getProcessStartTime,
   isRunStateLive,
   sweepStaleRunStates,
-  type RunState,
 } from "../lib/web-dir.js";
 import {
   cleanNextCache,
   findRunningDashboardPid,
   waitForPortFree,
 } from "../lib/dashboard-rebuild.js";
+import { isAoProcess } from "../lib/process-identity.js";
 
 /**
  * Resolve project from config.
@@ -130,31 +131,20 @@ function registerCleanupHandlers(
 ): void {
   let cleanedUp = false;
 
-  function cleanup(signal: NodeJS.Signals): void {
+  function doCleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
 
-    deleteRunState(configPath, projectId);
+    cleanupRunState({
+      configPath,
+      projectName: projectId,
+      pgid: dashboardProcess.pid ?? undefined,
+      tmuxSession: ctx.tmuxSession,
+    });
+  }
 
-    // Kill tmux session (orchestrator agent)
-    if (ctx.tmuxSession) {
-      try {
-        execFileSync("tmux", ["kill-session", "-t", ctx.tmuxSession], {
-          timeout: 5_000,
-        });
-      } catch {
-        // Session already dead or tmux not running
-      }
-    }
-
-    // Kill dashboard process group
-    if (dashboardProcess.pid) {
-      try {
-        process.kill(-dashboardProcess.pid, "SIGTERM");
-      } catch {
-        // Already exited
-      }
-    }
+  function onSignal(signal: NodeJS.Signals): void {
+    doCleanup();
 
     // Remove our listeners, re-raise signal for correct exit code (128 + signum)
     process.removeListener("SIGINT", onSigint);
@@ -163,10 +153,10 @@ function registerCleanupHandlers(
   }
 
   function onSigint(): void {
-    cleanup("SIGINT");
+    onSignal("SIGINT");
   }
   function onSigterm(): void {
-    cleanup("SIGTERM");
+    onSignal("SIGTERM");
   }
 
   process.on("SIGINT", onSigint);
@@ -174,30 +164,7 @@ function registerCleanupHandlers(
 
   // Clean up everything on normal dashboard exit too (e.g. dashboard killed externally)
   dashboardProcess.on("exit", () => {
-    if (!cleanedUp) {
-      cleanedUp = true;
-      deleteRunState(configPath, projectId);
-
-      // Kill tmux session so it doesn't outlive the dashboard
-      if (ctx.tmuxSession) {
-        try {
-          execFileSync("tmux", ["kill-session", "-t", ctx.tmuxSession], {
-            timeout: 5_000,
-          });
-        } catch {
-          // Session already dead or tmux not running
-        }
-      }
-
-      // Kill dashboard process group to clean up orphaned children (next-server etc.)
-      if (dashboardProcess.pid) {
-        try {
-          process.kill(-dashboardProcess.pid, "SIGTERM");
-        } catch {
-          // Already exited or group doesn't exist
-        }
-      }
-    }
+    doCleanup();
   });
 }
 
@@ -216,9 +183,23 @@ async function stopDashboard(port: number): Promise<void> {
       .filter((p) => p.length > 0);
 
     if (pids.length > 0) {
-      // Kill all processes (pass PIDs as separate arguments)
-      await exec("kill", pids);
-      console.log(chalk.green("Dashboard stopped"));
+      // Identity gate: only kill PIDs that belong to ao processes
+      const verified: string[] = [];
+      for (const pid of pids) {
+        const pidNum = parseInt(pid, 10);
+        if (!isNaN(pidNum) && (await isAoProcess(pidNum))) {
+          verified.push(pid);
+        }
+      }
+
+      if (verified.length > 0) {
+        await exec("kill", verified);
+        console.log(chalk.green("Dashboard stopped"));
+      } else {
+        console.log(
+          chalk.yellow(`Port ${port} is in use but not by an ao process — skipping kill`),
+        );
+      }
     } else {
       console.log(chalk.yellow(`Dashboard not running on port ${port}`));
     }
@@ -321,22 +302,30 @@ export function registerStart(program: Command): void {
             if (opts?.rebuild) {
               const runningPid = await findRunningDashboardPid(port);
               if (runningPid) {
-                console.log(chalk.dim(`Stopping dashboard (PID ${runningPid}) on port ${port}...`));
-                try {
-                  process.kill(parseInt(runningPid, 10), "SIGTERM");
-                } catch {
-                  // Process already exited (ESRCH) — that's fine
-                }
-                try {
-                  await waitForPortFree(port, 5000);
-                } catch {
-                  // Graceful stop failed — force kill and retry once
+                const pidNum = parseInt(runningPid, 10);
+                // Identity gate: only kill if it's an ao process
+                if (await isAoProcess(pidNum)) {
+                  console.log(chalk.dim(`Stopping dashboard (PID ${runningPid}) on port ${port}...`));
                   try {
-                    process.kill(parseInt(runningPid, 10), "SIGKILL");
+                    process.kill(pidNum, "SIGTERM");
                   } catch {
-                    // Best effort
+                    // Process already exited (ESRCH) — that's fine
                   }
-                  await waitForPortFree(port, 5000);
+                  try {
+                    await waitForPortFree(port, 5000);
+                  } catch {
+                    // Graceful stop failed — force kill and retry once
+                    try {
+                      process.kill(pidNum, "SIGKILL");
+                    } catch {
+                      // Best effort
+                    }
+                    await waitForPortFree(port, 5000);
+                  }
+                } else {
+                  console.log(
+                    chalk.yellow(`Port ${port} in use by non-ao process (PID ${runningPid}) — skipping kill`),
+                  );
                 }
               }
               await cleanNextCache(webDir);
@@ -455,6 +444,17 @@ export function registerStart(program: Command): void {
             }
           }
 
+          // Persist tmuxSession in run state so `ao stop` can kill it
+          if (config.configPath && tmuxTarget !== sessionId) {
+            const currentState = readRunState(config.configPath, projectId);
+            if (currentState) {
+              writeRunState(config.configPath, projectId, {
+                ...currentState,
+                tmuxSession: tmuxTarget,
+              });
+            }
+          }
+
           // Print summary based on what was actually started
           console.log(chalk.bold.green("\n✓ Startup complete\n"));
 
@@ -531,23 +531,27 @@ export function registerStop(program: Command): void {
           const pidAlive = await isRunStateLive(runState);
 
           if (pidAlive) {
-            try {
-              // Kill process group (dashboard + all terminal WS children)
-              process.kill(-runState.pgid, "SIGTERM");
-              console.log(chalk.green(`Dashboard stopped (process group ${runState.pgid})`));
-            } catch {
-              console.log(chalk.yellow("Could not stop dashboard process group (may already be stopped)"));
-            }
+            // Use consolidated cleanup (kills pgid + tmux + deletes run state)
+            cleanupRunState({
+              configPath: runState.configPath,
+              projectName: runState.projectName,
+              pgid: runState.pgid,
+              tmuxSession: runState.tmuxSession,
+            });
+            console.log(chalk.green(`Dashboard stopped (process group ${runState.pgid})`));
           } else {
             console.log(chalk.yellow("Dashboard PID is stale — already stopped"));
-          }
-          if (config.configPath) {
-            deleteRunState(config.configPath, projectId);
+            // Still clean up the stale run state file
+            if (config.configPath) {
+              deleteRunState(config.configPath, projectId);
+            }
           }
         } else {
-          // Legacy fallback: no run state file — scan port range (configured port through +10)
+          // Legacy fallback: no run state file — scan port ranges
           console.log(chalk.dim("No run state found — falling back to port-based cleanup"));
           let stopped = false;
+
+          // Scan dashboard ports (configured port through +10)
           for (let offset = 0; offset <= 10; offset++) {
             const scanPort = port + offset;
             const pid = await findRunningDashboardPid(scanPort);
@@ -557,6 +561,24 @@ export function registerStop(program: Command): void {
               break;
             }
           }
+
+          // Also scan terminal WS port range (14800-14849)
+          for (let wsPort = 14800; wsPort < 14850; wsPort++) {
+            const pid = await findRunningDashboardPid(wsPort);
+            if (pid) {
+              const pidNum = parseInt(pid, 10);
+              if (!isNaN(pidNum) && (await isAoProcess(pidNum))) {
+                try {
+                  process.kill(pidNum, "SIGTERM");
+                  console.log(chalk.green(`Stopped terminal WS server (PID ${pid}) on port ${wsPort}`));
+                  stopped = true;
+                } catch {
+                  // Already exited
+                }
+              }
+            }
+          }
+
           if (!stopped) {
             console.log(chalk.yellow(`Dashboard not running on ports ${port}–${port + 10}`));
           }

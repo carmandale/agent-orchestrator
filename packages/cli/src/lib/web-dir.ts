@@ -19,6 +19,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname, join } from "node:path";
+import { z } from "zod";
 import { execSilent } from "./shell.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -135,17 +136,22 @@ function runStateFilename(configPath: string, projectName: string): string {
   return `${hash}.json`;
 }
 
-export interface RunState {
-  configPath: string;
-  projectName: string;
-  dashboardPid: number;
-  dashboardPort: number;
-  terminalPorts: number[];
-  startedAt: string;
-  pgid: number;
+/** Zod schema for validated run state — rejects garbage before destructive use. */
+export const RunStateSchema = z.object({
+  configPath: z.string().min(1),
+  projectName: z.string().min(1),
+  dashboardPid: z.number().int().positive(),
+  dashboardPort: z.number().int().min(1).max(65535),
+  terminalPorts: z.array(z.number().int().min(1).max(65535)),
+  startedAt: z.string().min(1),
+  pgid: z.number().int().positive(),
   /** Process start time from `ps -o lstart=`. Used to detect PID recycling. */
-  processStartTime?: string;
-}
+  processStartTime: z.string().optional(),
+  /** tmux session name — allows `ao stop` to kill the orchestrator session. */
+  tmuxSession: z.string().optional(),
+});
+
+export type RunState = z.infer<typeof RunStateSchema>;
 
 /** Write run state atomically (write to .tmp, rename). */
 export function writeRunState(configPath: string, projectName: string, state: RunState): void {
@@ -157,13 +163,14 @@ export function writeRunState(configPath: string, projectName: string, state: Ru
   renameSync(tmpPath, filepath);
 }
 
-/** Read run state, or null if missing/corrupt. */
+/** Read run state, or null if missing/corrupt/invalid. */
 export function readRunState(configPath: string, projectName: string): RunState | null {
   const filename = runStateFilename(configPath, projectName);
   const filepath = join(RUN_STATE_DIR, filename);
   if (!existsSync(filepath)) return null;
   try {
-    return JSON.parse(readFileSync(filepath, "utf-8")) as RunState;
+    const raw: unknown = JSON.parse(readFileSync(filepath, "utf-8"));
+    return RunStateSchema.parse(raw);
   } catch {
     return null;
   }
@@ -188,6 +195,43 @@ export function deleteRunState(configPath: string, projectName: string): void {
   const filename = runStateFilename(configPath, projectName);
   const filepath = join(RUN_STATE_DIR, filename);
   trashFile(filepath);
+}
+
+/**
+ * Consolidated cleanup: kill process group + tmux session + delete run state.
+ * Synchronous — safe to call from signal handlers.
+ *
+ * Kill ordering: process group first (stops dashboard + terminal servers),
+ * then tmux session (stops orchestrator agent), then delete run state file.
+ */
+export function cleanupRunState(opts: {
+  configPath: string;
+  projectName: string;
+  pgid?: number;
+  tmuxSession?: string;
+}): void {
+  // 1. Kill process group (dashboard + all terminal WS children)
+  if (opts.pgid) {
+    try {
+      process.kill(-opts.pgid, "SIGTERM");
+    } catch {
+      // Already exited or group doesn't exist
+    }
+  }
+
+  // 2. Kill tmux session (orchestrator agent)
+  if (opts.tmuxSession) {
+    try {
+      execFileSync("tmux", ["kill-session", "-t", opts.tmuxSession], {
+        timeout: 5_000,
+      });
+    } catch {
+      // Session already dead or tmux not running
+    }
+  }
+
+  // 3. Delete run state file
+  deleteRunState(opts.configPath, opts.projectName);
 }
 
 /** Get the process start time via `ps -o lstart=`. Returns null if the process doesn't exist. */
@@ -231,10 +275,10 @@ export function listAllRunStates(): Array<{ filename: string; state: RunState }>
     if (!filename.endsWith(".json")) continue;
     try {
       const content = readFileSync(join(RUN_STATE_DIR, filename), "utf-8");
-      const state = JSON.parse(content) as RunState;
-      // Basic shape validation
-      if (typeof state.dashboardPid === "number" && typeof state.pgid === "number") {
-        results.push({ filename, state });
+      const raw: unknown = JSON.parse(content);
+      const parsed = RunStateSchema.safeParse(raw);
+      if (parsed.success) {
+        results.push({ filename, state: parsed.data });
       }
     } catch {
       // Corrupt file — skip
