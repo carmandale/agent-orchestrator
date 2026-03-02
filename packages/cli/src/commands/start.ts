@@ -131,20 +131,22 @@ function registerCleanupHandlers(
 ): void {
   let cleanedUp = false;
 
-  function doCleanup(): void {
+  function doCleanup(source: string): void {
     if (cleanedUp) return;
     cleanedUp = true;
 
+    console.error(`[ao:cleanup] triggered by: ${source} (parent PID ${process.pid})`);
     cleanupRunState({
       configPath,
       projectName: projectId,
       pgid: dashboardProcess.pid ?? undefined,
       tmuxSession: ctx.tmuxSession,
     });
+    console.error("[ao:cleanup] done");
   }
 
   function onSignal(signal: NodeJS.Signals): void {
-    doCleanup();
+    doCleanup(`signal:${signal}`);
 
     // Remove our listeners, re-raise signal for correct exit code (128 + signum)
     process.removeListener("SIGINT", onSigint);
@@ -163,8 +165,9 @@ function registerCleanupHandlers(
   process.on("SIGTERM", onSigterm);
 
   // Clean up everything on normal dashboard exit too (e.g. dashboard killed externally)
-  dashboardProcess.on("exit", () => {
-    doCleanup();
+  dashboardProcess.on("exit", (code, signal) => {
+    console.error(`[ao:cleanup] dashboard.on("exit") fired — code=${code} signal=${signal}`);
+    doCleanup("dashboard-exit");
   });
 }
 
