@@ -1,9 +1,9 @@
 ## Ledger
-**Updated:** 2026-03-01T15:51:00.537Z
+**Updated:** 2026-03-02T11:29:32.907Z
 
 ---
 _Synthesized from:_
-- Events: 8
-- Latest: 2026-03-01T15:51:00.449Z
+- Events: 20
+- Latest: 2026-03-02T10:26:33.476Z
 - Branches: main
-- Generated: 2026-03-01T15:51:00.537Z
+- Generated: 2026-03-02T11:29:32.907Z
