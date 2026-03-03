@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+mode: handoff
+date: 2026-03-03T17:36:55.238Z
+session: "agent-orchestrator-8-multi-project-dispatch"
+outcome: "SUCCEEDED"
+primary_bead: "agent-orchestrator-8"
+---
+
+goal: "Make repo optional in ProjectConfig so AO supports local-only projects and multi-project dispatch"
+now: "Feature shipped on main (commit 8523352). Chip verified end-to-end: ao project add from inside apple-notes-export inferred path+repo, ao start launched Claude Code successfully. 477 tests passing. Bead closed."
+
+done_this_session:
+  - "Made ProjectConfig.repo optional (string | undefined)"
+  - "Config Zod schema: optional repo + superRefine rejects GitHub SCM/tracker without repo"
+  - "getSCM() returns null for repo-less projects; status.ts guards SCM calls"
+  - "project-add.ts: --repo and --path now optional; infers CWD + git remote origin"
+  - "Plugin guards in scm-github and tracker-github (early repo validation)"
+  - "Prompts conditionally display repo line"
+  - "477 tests passing (284 core + 193 CLI) with 10 new test cases"
+  - "Codex approved plan after 3 review rounds"
+  - "Chip verified: ao project add + ao start on apple-notes-export — end-to-end success"
+
+decisions:
+  - "Shape A selected: git-inferred project add with optional repo"
+  - "Repo-less projects get no SCM, no tracker (null returns, not fallback to github)"
+  - "superRefine validates GitHub plugin/repo consistency at config load time"
+
+files:
+  - packages/core/src/types.ts
+  - packages/core/src/config.ts
+  - packages/core/src/orchestrator-prompt.ts
+  - packages/core/src/prompt-builder.ts
+  - packages/cli/src/commands/project-add.ts
+  - packages/cli/src/commands/start.ts
+  - packages/cli/src/commands/status.ts
+  - packages/cli/src/lib/plugins.ts
+  - packages/plugins/scm-github/src/index.ts
+  - packages/plugins/tracker-github/src/index.ts
+  - packages/core/src/__tests__/config-validation.test.ts
+  - packages/core/src/__tests__/orchestrator-prompt.test.ts
+  - packages/core/src/__tests__/prompt-builder.test.ts
+  - packages/cli/__tests__/commands/project-add.test.ts
+  - packages/cli/__tests__/commands/status.test.ts
+  - specs/004-multi-project/shaping.md
+
+test:
+  core: "284 passed"
+  cli: "193 passed"
+
+git:
+  branch: "main"
+  commit: "8523352df28badfb7f7cea2feb384b3758dcf7e6"
+  remote: "https://github.com/carmandale/agent-orchestrator.git"
