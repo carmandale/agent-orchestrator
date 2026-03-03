@@ -54,12 +54,14 @@ function createGitHubTracker(): Tracker {
     name: "github",
 
     async getIssue(identifier: string, project: ProjectConfig): Promise<Issue> {
+      const repo = project.repo;
+      if (!repo) throw new Error("GitHub tracker requires a repo field");
       const raw = await gh([
         "issue",
         "view",
         identifier,
         "--repo",
-        project.repo,
+        repo,
         "--json",
         "number,title,body,url,state,stateReason,labels,assignees",
       ]);
@@ -87,12 +89,14 @@ function createGitHubTracker(): Tracker {
     },
 
     async isCompleted(identifier: string, project: ProjectConfig): Promise<boolean> {
+      const repo = project.repo;
+      if (!repo) throw new Error("GitHub tracker requires a repo field");
       const raw = await gh([
         "issue",
         "view",
         identifier,
         "--repo",
-        project.repo,
+        repo,
         "--json",
         "state",
       ]);
@@ -101,8 +105,10 @@ function createGitHubTracker(): Tracker {
     },
 
     issueUrl(identifier: string, project: ProjectConfig): string {
+      const repo = project.repo;
+      if (!repo) throw new Error("GitHub tracker requires a repo field");
       const num = identifier.replace(/^#/, "");
-      return `https://github.com/${project.repo}/issues/${num}`;
+      return `https://github.com/${repo}/issues/${num}`;
     },
 
     issueLabel(url: string, _project: ProjectConfig): string {
@@ -124,6 +130,7 @@ function createGitHubTracker(): Tracker {
     },
 
     async generatePrompt(identifier: string, project: ProjectConfig): Promise<string> {
+      if (!project.repo) throw new Error("GitHub tracker requires a repo field");
       const issue = await this.getIssue(identifier, project);
       const lines = [
         `You are working on GitHub issue #${issue.id}: ${issue.title}`,
@@ -148,11 +155,13 @@ function createGitHubTracker(): Tracker {
     },
 
     async listIssues(filters: IssueFilters, project: ProjectConfig): Promise<Issue[]> {
+      const repo = project.repo;
+      if (!repo) throw new Error("GitHub tracker requires a repo field");
       const args = [
         "issue",
         "list",
         "--repo",
-        project.repo,
+        repo,
         "--json",
         "number,title,body,url,state,stateReason,labels,assignees",
         "--limit",
@@ -203,12 +212,14 @@ function createGitHubTracker(): Tracker {
       update: IssueUpdate,
       project: ProjectConfig,
     ): Promise<void> {
+      const repo = project.repo;
+      if (!repo) throw new Error("GitHub tracker requires a repo field");
       // Handle state change — GitHub Issues only supports open/closed.
       // "in_progress" is not a GitHub state, so it is intentionally a no-op.
       if (update.state === "closed") {
-        await gh(["issue", "close", identifier, "--repo", project.repo]);
+        await gh(["issue", "close", identifier, "--repo", repo]);
       } else if (update.state === "open") {
-        await gh(["issue", "reopen", identifier, "--repo", project.repo]);
+        await gh(["issue", "reopen", identifier, "--repo", repo]);
       }
 
       // Handle label changes
@@ -218,7 +229,7 @@ function createGitHubTracker(): Tracker {
           "edit",
           identifier,
           "--repo",
-          project.repo,
+          repo,
           "--add-label",
           update.labels.join(","),
         ]);
@@ -231,7 +242,7 @@ function createGitHubTracker(): Tracker {
           "edit",
           identifier,
           "--repo",
-          project.repo,
+          repo,
           "--add-assignee",
           update.assignee,
         ]);
@@ -244,7 +255,7 @@ function createGitHubTracker(): Tracker {
           "comment",
           identifier,
           "--repo",
-          project.repo,
+          repo,
           "--body",
           update.comment,
         ]);
@@ -252,11 +263,13 @@ function createGitHubTracker(): Tracker {
     },
 
     async createIssue(input: CreateIssueInput, project: ProjectConfig): Promise<Issue> {
+      const repo = project.repo;
+      if (!repo) throw new Error("GitHub tracker requires a repo field");
       const args = [
         "issue",
         "create",
         "--repo",
-        project.repo,
+        repo,
         "--title",
         input.title,
         "--body",

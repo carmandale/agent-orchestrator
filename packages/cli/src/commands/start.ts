@@ -62,7 +62,8 @@ function resolveProject(
     const project = config.projects[projectArg];
     if (!project) {
       throw new Error(
-        `Project "${projectArg}" not found. Available projects:\n  ${projectIds.join(", ")}`,
+        `Project "${projectArg}" not found. Available: ${projectIds.join(", ")}.\n` +
+        `To add: ao project add ${projectArg} --path /path/to/${projectArg}`,
       );
     }
     return { projectId: projectArg, project };

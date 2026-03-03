@@ -75,7 +75,7 @@ function resolveSessionAgent(config: OrchestratorConfig, project: ProjectConfig,
 async function gatherSessionInfo(
   session: Session,
   agent: Agent,
-  scm: SCM,
+  scm: SCM | null,
   projectConfig: ReturnType<typeof loadConfig>,
 ): Promise<SessionInfo> {
   let branch = session.branch;
@@ -121,7 +121,7 @@ async function gatherSessionInfo(
     }
   }
 
-  if (branch) {
+  if (branch && scm) {
     try {
       const project = projectConfig.projects[session.projectId];
       if (project) {
@@ -270,7 +270,7 @@ export function registerStatus(program: Command): void {
           a.id.localeCompare(b.id),
         );
 
-        // Resolve SCM for this project
+        // Resolve SCM for this project (null for repo-less projects)
         const scm = getSCM(config, projectId);
 
         if (!opts.json) {

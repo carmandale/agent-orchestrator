@@ -43,14 +43,21 @@ function generateProjectInfoSection(
   config: OrchestratorConfig,
   project: ProjectConfig,
 ): string {
-  return `## Project Info
-
-- **Name**: ${project.name}
-- **Repository**: ${project.repo}
-- **Default Branch**: ${project.defaultBranch}
-- **Session Prefix**: ${project.sessionPrefix}
-- **Local Path**: ${project.path}
-- **Dashboard Port**: ${config.port ?? 3000}`;
+  const lines = [
+    `## Project Info`,
+    ``,
+    `- **Name**: ${project.name}`,
+  ];
+  if (project.repo) {
+    lines.push(`- **Repository**: ${project.repo}`);
+  }
+  lines.push(
+    `- **Default Branch**: ${project.defaultBranch}`,
+    `- **Session Prefix**: ${project.sessionPrefix}`,
+    `- **Local Path**: ${project.path}`,
+    `- **Dashboard Port**: ${config.port ?? 3000}`,
+  );
+  return lines.join("\n");
 }
 
 function generateCLICommandsTable(config: OrchestratorConfig): string {

@@ -78,10 +78,12 @@ function createGitHubSCM(): SCM {
 
     async detectPR(session: Session, project: ProjectConfig): Promise<PRInfo | null> {
       if (!session.branch) return null;
+      const repoStr = project.repo;
+      if (!repoStr) throw new Error("GitHub SCM requires a repo field");
 
-      const parts = project.repo.split("/");
+      const parts = repoStr.split("/");
       if (parts.length !== 2 || !parts[0] || !parts[1]) {
-        throw new Error(`Invalid repo format "${project.repo}", expected "owner/repo"`);
+        throw new Error(`Invalid repo format "${repoStr}", expected "owner/repo"`);
       }
       const [owner, repo] = parts;
       try {
@@ -89,7 +91,7 @@ function createGitHubSCM(): SCM {
           "pr",
           "list",
           "--repo",
-          project.repo,
+          repoStr,
           "--head",
           session.branch,
           "--json",

@@ -82,6 +82,36 @@ describe("generateOrchestratorPrompt — coordinator mode (no prompt)", () => {
   });
 });
 
+describe("generateOrchestratorPrompt — optional repo", () => {
+  it("omits Repository line when project.repo is undefined", () => {
+    const { config } = makeConfig();
+    const localProject: ProjectConfig = {
+      name: "local-app",
+      path: "/repos/local-app",
+      defaultBranch: "main",
+      sessionPrefix: "loc",
+    };
+    config.projects["local-app"] = localProject;
+
+    const result = generateOrchestratorPrompt({
+      config,
+      projectId: "local-app",
+      project: localProject,
+    });
+
+    expect(result).not.toContain("**Repository**:");
+    expect(result).toContain("local-app");
+    expect(result).toContain("main");
+  });
+
+  it("includes Repository line when project.repo is defined", () => {
+    const opts = makeConfig();
+    const result = generateOrchestratorPrompt(opts);
+
+    expect(result).toContain("org/test-app");
+  });
+});
+
 describe("generateOrchestratorPrompt — discover-first mode (with prompt)", () => {
   it("generates discover-first prompt with Build Agent header", () => {
     const opts = { ...makeConfig(), prompt: "Build a todo app with auth" };

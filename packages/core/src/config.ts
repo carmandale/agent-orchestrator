@@ -59,30 +59,47 @@ const AgentSpecificConfigSchema = z
   })
   .passthrough();
 
-const ProjectConfigSchema = z.object({
-  name: z.string().optional(),
-  repo: z.string(),
-  path: z.string(),
-  defaultBranch: z.string().default("main"),
-  sessionPrefix: z
-    .string()
-    .regex(/^[a-zA-Z0-9_-]+$/, "sessionPrefix must match [a-zA-Z0-9_-]+")
-    .optional(),
-  runtime: z.string().optional(),
-  agent: z.string().optional(),
-  orchestratorAgent: z.string().optional(),
-  workspace: z.string().optional(),
-  tracker: TrackerConfigSchema.optional(),
-  scm: SCMConfigSchema.optional(),
-  symlinks: z.array(z.string()).optional(),
-  postCreate: z.array(z.string()).optional(),
-  agentConfig: AgentSpecificConfigSchema.optional(),
-  orchestratorAgentConfig: AgentSpecificConfigSchema.optional(),
-  reactions: z.record(ReactionConfigSchema.partial()).optional(),
-  agentRules: z.string().optional(),
-  agentRulesFile: z.string().optional(),
-  orchestratorRules: z.string().optional(),
-});
+const ProjectConfigSchema = z
+  .object({
+    name: z.string().optional(),
+    repo: z.string().optional(),
+    path: z.string(),
+    defaultBranch: z.string().default("main"),
+    sessionPrefix: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]+$/, "sessionPrefix must match [a-zA-Z0-9_-]+")
+      .optional(),
+    runtime: z.string().optional(),
+    agent: z.string().optional(),
+    orchestratorAgent: z.string().optional(),
+    workspace: z.string().optional(),
+    tracker: TrackerConfigSchema.optional(),
+    scm: SCMConfigSchema.optional(),
+    symlinks: z.array(z.string()).optional(),
+    postCreate: z.array(z.string()).optional(),
+    agentConfig: AgentSpecificConfigSchema.optional(),
+    orchestratorAgentConfig: AgentSpecificConfigSchema.optional(),
+    reactions: z.record(ReactionConfigSchema.partial()).optional(),
+    agentRules: z.string().optional(),
+    agentRulesFile: z.string().optional(),
+    orchestratorRules: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.repo && data.scm?.plugin === "github") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "GitHub SCM requires a repo field (owner/repo format)",
+        path: ["scm", "plugin"],
+      });
+    }
+    if (!data.repo && data.tracker?.plugin === "github") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "GitHub tracker requires a repo field (owner/repo format)",
+        path: ["tracker", "plugin"],
+      });
+    }
+  });
 
 const DefaultPluginsSchema = z.object({
   runtime: z.string().default("tmux"),
@@ -146,13 +163,13 @@ function applyProjectDefaults(config: OrchestratorConfig): OrchestratorConfig {
       project.sessionPrefix = generateSessionPrefix(projectId);
     }
 
-    // Infer SCM from repo if not set
-    if (!project.scm && project.repo.includes("/")) {
+    // Infer SCM from repo if not set (skip for local-only repos)
+    if (!project.scm && project.repo?.includes("/")) {
       project.scm = { plugin: "github" };
     }
 
-    // Infer tracker from repo if not set (default to github issues)
-    if (!project.tracker) {
+    // Infer tracker from repo if not set (skip for local-only repos)
+    if (!project.tracker && project.repo) {
       project.tracker = { plugin: "github" };
     }
   }

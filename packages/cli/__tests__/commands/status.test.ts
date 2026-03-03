@@ -76,26 +76,32 @@ vi.mock("@composio/ao-core", async (importOriginal) => {
 vi.mock("../../src/lib/plugins.js", () => ({
   getAgent: (config: { defaults: { agent: string } }) => mockGetAgentByName(config.defaults.agent),
   getAgentByName: mockGetAgentByName,
-  getSCM: () => ({
-    name: "github",
-    detectPR: mockDetectPR,
-    getCISummary: mockGetCISummary,
-    getReviewDecision: mockGetReviewDecision,
-    getPendingComments: mockGetPendingComments,
-    getAutomatedComments: vi.fn().mockResolvedValue([]),
-    getCIChecks: vi.fn().mockResolvedValue([]),
-    getReviews: vi.fn().mockResolvedValue([]),
-    getMergeability: vi.fn().mockResolvedValue({
-      mergeable: true,
-      ciPassing: true,
-      approved: false,
-      noConflicts: true,
-      blockers: [],
-    }),
-    getPRState: vi.fn().mockResolvedValue("open"),
-    mergePR: vi.fn(),
-    closePR: vi.fn(),
-  }),
+  getSCM: (_config: unknown, projectId: string) => {
+    // Return null for projects without SCM config (repo-less projects)
+    const cfg = mockConfigRef.current as Record<string, unknown> | null;
+    const projects = cfg?.projects as Record<string, { scm?: unknown }> | undefined;
+    if (!projects?.[projectId]?.scm) return null;
+    return {
+      name: "github",
+      detectPR: mockDetectPR,
+      getCISummary: mockGetCISummary,
+      getReviewDecision: mockGetReviewDecision,
+      getPendingComments: mockGetPendingComments,
+      getAutomatedComments: vi.fn().mockResolvedValue([]),
+      getCIChecks: vi.fn().mockResolvedValue([]),
+      getReviews: vi.fn().mockResolvedValue([]),
+      getMergeability: vi.fn().mockResolvedValue({
+        mergeable: true,
+        ciPassing: true,
+        approved: false,
+        noConflicts: true,
+        blockers: [],
+      }),
+      getPRState: vi.fn().mockResolvedValue("open"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+    };
+  },
 }));
 
 /** Parse a key=value metadata file into a Record<string, string>. */
@@ -678,6 +684,52 @@ describe("status command", () => {
     const jsonCalls = consoleSpy.mock.calls.map((c) => c[0]).join("");
     const parsed = JSON.parse(jsonCalls);
     expect(parsed[0].activity).toBeNull();
+  });
+
+  it("skips SCM probing for repo-less projects", async () => {
+    // Configure a project with no repo and no scm
+    const localPath = join(tmpDir, "local-repo");
+    mkdirSync(localPath, { recursive: true });
+    const localSessionsDir = getSessionsDir(
+      (mockConfigRef.current as Record<string, unknown>).configPath as string,
+      localPath,
+    );
+    mkdirSync(localSessionsDir, { recursive: true });
+
+    (mockConfigRef.current as Record<string, unknown>).projects = {
+      "local-only": {
+        name: "Local Only",
+        path: localPath,
+        defaultBranch: "main",
+        sessionPrefix: "loc",
+        // No repo, no scm
+      },
+    };
+
+    writeFileSync(join(localSessionsDir, "loc-1"), "branch=main\nstatus=working\n");
+
+    mockSessionManager.list.mockImplementation(async () => {
+      return buildSessionsFromDir(localSessionsDir, "local-only");
+    });
+
+    mockTmux.mockImplementation(async (...args: string[]) => {
+      if (args[0] === "list-sessions") return "loc-1";
+      if (args[0] === "display-message") return null;
+      return null;
+    });
+    mockGit.mockResolvedValue("main");
+
+    await program.parseAsync(["node", "test", "status"]);
+
+    // SCM functions should never be called for a repo-less project
+    expect(mockDetectPR).not.toHaveBeenCalled();
+    expect(mockGetCISummary).not.toHaveBeenCalled();
+    expect(mockGetReviewDecision).not.toHaveBeenCalled();
+
+    // Session should still appear in output
+    const output = consoleSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("Local Only");
+    expect(output).toContain("loc-1");
   });
 
   it("shows exited activity from session manager", async () => {

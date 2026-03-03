@@ -38,13 +38,15 @@ export function getAgentByName(name: string): Agent {
 }
 
 /**
- * Resolve the SCM plugin for a project (or fall back to "github").
+ * Resolve the SCM plugin for a project.
+ * Returns null for repo-less projects (no SCM config).
  */
-export function getSCM(config: OrchestratorConfig, projectId: string): SCM {
-  const scmName = config.projects[projectId]?.scm?.plugin || "github";
-  const plugin = scmPlugins[scmName];
+export function getSCM(config: OrchestratorConfig, projectId: string): SCM | null {
+  const scmConfig = config.projects[projectId]?.scm;
+  if (!scmConfig) return null;
+  const plugin = scmPlugins[scmConfig.plugin];
   if (!plugin) {
-    throw new Error(`Unknown SCM plugin: ${scmName}`);
+    throw new Error(`Unknown SCM plugin: ${scmConfig.plugin}`);
   }
   return plugin.create();
 }

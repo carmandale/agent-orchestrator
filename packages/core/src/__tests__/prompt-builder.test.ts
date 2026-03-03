@@ -202,6 +202,36 @@ describe("buildPrompt", () => {
   });
 });
 
+describe("buildPrompt — optional repo", () => {
+  it("omits Repository line when project.repo is undefined", () => {
+    const localProject: ProjectConfig = {
+      name: "Local App",
+      path: tmpDir,
+      defaultBranch: "main",
+      sessionPrefix: "loc",
+    };
+    const result = buildPrompt({
+      project: localProject,
+      projectId: "local-app",
+      issueId: "TASK-1",
+    });
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("Repository:");
+    expect(result).toContain("Local App");
+    expect(result).toContain("main");
+  });
+
+  it("includes Repository line when project.repo is defined", () => {
+    const result = buildPrompt({
+      project,
+      projectId: "test-app",
+      issueId: "TASK-1",
+    });
+    expect(result).not.toBeNull();
+    expect(result).toContain("Repository: org/test-app");
+  });
+});
+
 describe("BASE_AGENT_PROMPT", () => {
   it("is a non-empty string", () => {
     expect(typeof BASE_AGENT_PROMPT).toBe("string");

@@ -61,7 +61,7 @@ function makeProgram(): Command {
 
 describe("ao project add", () => {
   it("adds a project to the YAML file correctly", async () => {
-    const { configPath, projectPath } = setupEnv();
+    const { configPath } = setupEnv();
     const newProjectPath = join(tmpDir, "new-app");
     mkGitDir(newProjectPath);
 
@@ -198,6 +198,90 @@ describe("ao project add", () => {
     expect(content).toContain("flg");
     expect(content).toContain("codex");
     expect(content).toContain("skip");
+  });
+
+  it("defaults --path to process.cwd() when not provided", async () => {
+    const { configPath } = setupEnv();
+    // Temporarily override cwd to our test project path
+    const projectPath = join(tmpDir, "cwd-test");
+    mkGitDir(projectPath);
+    const originalCwd = process.cwd;
+    process.cwd = () => projectPath;
+
+    const program = makeProgram();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await program.parseAsync([
+      "node",
+      "test",
+      "project",
+      "add",
+      "cwd-test",
+      "--repo",
+      "org/cwd-test",
+      // No --path flag
+    ]);
+
+    process.cwd = originalCwd;
+
+    const content = readFileSync(configPath, "utf-8");
+    expect(content).toContain("cwd-test:");
+    expect(content).toContain(projectPath);
+  });
+
+  it("adds a project without --repo (local-only)", async () => {
+    const { configPath } = setupEnv();
+    const newProjectPath = join(tmpDir, "local-only");
+    mkGitDir(newProjectPath);
+
+    const program = makeProgram();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await program.parseAsync([
+      "node",
+      "test",
+      "project",
+      "add",
+      "local-only",
+      "--path",
+      newProjectPath,
+      // No --repo flag and no git remote configured
+    ]);
+
+    const content = readFileSync(configPath, "utf-8");
+    expect(content).toContain("local-only:");
+    expect(content).toContain(newProjectPath);
+    // repo should NOT be written to the YAML
+    expect(content).not.toMatch(/local-only:[\s\S]*?repo:/);
+  });
+
+  it("infers repo from git remote origin", async () => {
+    const { configPath } = setupEnv();
+    const newProjectPath = join(tmpDir, "inferred-repo");
+    mkGitDir(newProjectPath);
+    // Configure a remote so `git remote get-url origin` works
+    execFileSync("git", ["-C", newProjectPath, "remote", "add", "origin", "https://github.com/alice/inferred-repo.git"]);
+
+    const program = makeProgram();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await program.parseAsync([
+      "node",
+      "test",
+      "project",
+      "add",
+      "inferred-repo",
+      "--path",
+      newProjectPath,
+      // No --repo flag — should infer from remote
+    ]);
+
+    const content = readFileSync(configPath, "utf-8");
+    expect(content).toContain("inferred-repo:");
+    expect(content).toContain("alice/inferred-repo");
   });
 
   it("preserves existing YAML comments", async () => {

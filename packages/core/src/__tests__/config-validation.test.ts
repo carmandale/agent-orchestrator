@@ -283,7 +283,7 @@ describe("Config Schema Validation", () => {
     expect(() => validateConfig(config)).toThrow();
   });
 
-  it("requires path, repo, and defaultBranch for each project", () => {
+  it("requires path and defaultBranch for each project (repo is optional)", () => {
     const missingPath = {
       projects: {
         proj1: {
@@ -299,7 +299,7 @@ describe("Config Schema Validation", () => {
         proj1: {
           path: "/repos/test",
           defaultBranch: "main",
-          // Missing repo
+          // Missing repo — should work (local-only project)
         },
       },
     };
@@ -315,7 +315,8 @@ describe("Config Schema Validation", () => {
     };
 
     expect(() => validateConfig(missingPath)).toThrow();
-    expect(() => validateConfig(missingRepo)).toThrow();
+    // repo is now optional — local-only projects work
+    expect(() => validateConfig(missingRepo)).not.toThrow();
     // missingBranch should work (defaults to "main")
     expect(() => validateConfig(missingBranch)).not.toThrow();
   });
@@ -335,6 +336,100 @@ describe("Config Schema Validation", () => {
     const validated = validateConfig(config);
     expect(validated.projects.proj1.sessionPrefix).toBeDefined();
     expect(validated.projects.proj1.sessionPrefix).toBe("test"); // "test" is 4 chars, used as-is
+  });
+});
+
+describe("Config Validation - Optional Repo", () => {
+  it("accepts config with repo undefined (local-only project)", () => {
+    const config = {
+      projects: {
+        local: {
+          path: "/repos/local-only",
+          defaultBranch: "main",
+          // No repo
+        },
+      },
+    };
+
+    const validated = validateConfig(config);
+    expect(validated.projects.local.repo).toBeUndefined();
+  });
+
+  it("does not infer SCM for repo-less projects", () => {
+    const config = {
+      projects: {
+        local: {
+          path: "/repos/local-only",
+          defaultBranch: "main",
+          // No repo
+        },
+      },
+    };
+
+    const validated = validateConfig(config);
+    expect(validated.projects.local.scm).toBeUndefined();
+  });
+
+  it("does not infer tracker for repo-less projects", () => {
+    const config = {
+      projects: {
+        local: {
+          path: "/repos/local-only",
+          defaultBranch: "main",
+          // No repo
+        },
+      },
+    };
+
+    const validated = validateConfig(config);
+    expect(validated.projects.local.tracker).toBeUndefined();
+  });
+
+  it("rejects GitHub SCM when repo is undefined", () => {
+    const config = {
+      projects: {
+        local: {
+          path: "/repos/local-only",
+          defaultBranch: "main",
+          scm: { plugin: "github" },
+          // No repo
+        },
+      },
+    };
+
+    expect(() => validateConfig(config)).toThrow(/GitHub SCM requires a repo field/);
+  });
+
+  it("rejects GitHub tracker when repo is undefined", () => {
+    const config = {
+      projects: {
+        local: {
+          path: "/repos/local-only",
+          defaultBranch: "main",
+          tracker: { plugin: "github" },
+          // No repo
+        },
+      },
+    };
+
+    expect(() => validateConfig(config)).toThrow(/GitHub tracker requires a repo field/);
+  });
+
+  it("existing configs with repo defined still work (backwards compat)", () => {
+    const config = {
+      projects: {
+        proj1: {
+          path: "/repos/test",
+          repo: "org/test",
+          defaultBranch: "main",
+        },
+      },
+    };
+
+    const validated = validateConfig(config);
+    expect(validated.projects.proj1.repo).toBe("org/test");
+    expect(validated.projects.proj1.scm).toEqual({ plugin: "github" });
+    expect(validated.projects.proj1.tracker).toEqual({ plugin: "github" });
   });
 });
 
